@@ -1,0 +1,115 @@
+[package]
+name = "claviron-grpc"
+version.workspace = true
+publish.workspace = true
+edition = "2024"
+autotests = false
+
+# ─────────────────────────────────────────────────────────────────────
+# Features
+# ─────────────────────────────────────────────────────────────────────
+# `server` pulls in transport (hyper/tower), TLS, config parsing,
+# DB ORM, certificate handling, and all sibling claviron-* crates the
+# gRPC services need.
+#
+# Default feature set is empty so a downstream consumer must opt in;
+# avoids accidentally compiling the heavy server tree into consumers that
+# only need generated proto types.
+[features]
+default = []
+server = [
+    "tonic/router",
+    # Claviron core facade. Extra crates must not depend on
+    # claviron's hidden internal crates directly.
+    "dep:claviron",
+    "claviron/edge",
+    "claviron/tls",
+    "claviron/hosting",
+    "claviron-acme?/server",
+    # transport / middleware / TLS termination
+    "dep:http",
+    "dep:http-body-util",
+    "dep:tower",
+    "dep:rustls",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tokio-rustls",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:socket2",
+    "dep:humantime-serde",
+    "dep:async-trait",
+    "dep:serde",
+    "dep:tracing",
+    # reflection / cert handling
+    "dep:tonic-reflection",
+    "dep:time",
+]
+tasks = ["claviron/tasks"]
+workers = ["server"]
+metrics = ["server", "claviron/metrics"]
+dns = ["server", "dep:claviron-dns"]
+domains = ["server", "dep:claviron-domains"]
+certificate-manager = ["server", "claviron/tls"]
+mtls-manager = ["server", "claviron/tls"]
+mtls = ["mtls-manager"]
+certificates = ["certificate-manager"]
+
+acme = [
+    "dep:claviron-acme",
+    "claviron-acme/db",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────────────────────────────
+# Layout:
+#   - Proto/codegen dependencies are always compiled so server modules can use
+#     generated message and service types.
+#   - Server-only dependencies are gated by `server`.
+
+[dependencies]
+# ── Proto / shared server dependencies ───────────────────────────────
+claviron = { workspace = true, optional = true }
+# ── Server-only (gated by `server` feature) ──────────────────────────
+claviron-acme = { version = "0.2.0-alpha.16", registry = "de02", path = "../acme", optional = true }
+claviron-dns = { version = "0.2.0-alpha.16", registry = "de02", path = "../dns", default-features = false, features = ["service"], optional = true }
+claviron-domains = { version = "0.2.0-alpha.16", registry = "de02", path = "../domains", default-features = false, features = ["godaddy", "namecheap"], optional = true }
+
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+hyper = { version = "1.11", features = ["server", "http2"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+socket2 = { version = "0.6", optional = true }
+humantime-serde = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+
+tonic = { workspace = true, default-features = false, features = ["codegen", "transport"] }
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+rustls = { workspace = true, optional = true }
+
+serde = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+# transport / middleware
+http = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+
+# reflection / cert handling
+tonic-reflection = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+claviron = { workspace = true, features = ["sqlite"] }
+serde_yaml.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }

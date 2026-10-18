@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT uuid, room, from_user_id, content, created_at\n            FROM chat.room_messages\n            WHERE uuid = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "room",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "from_user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6386e9661870dd339938698235c4ec885956baad8798892888d08b4e5d69c016"
+}

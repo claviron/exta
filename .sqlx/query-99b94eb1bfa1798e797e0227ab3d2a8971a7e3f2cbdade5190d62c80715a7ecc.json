@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT uuid, from_user_id, to_user_id, content, created_at, delivered_at, read_at\n            FROM chat.private_messages\n            WHERE ((from_user_id = $1 AND to_user_id = $2)\n                OR (from_user_id = $2 AND to_user_id = $1))\n              AND created_at > $3\n            ORDER BY created_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "from_user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "to_user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "delivered_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "read_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "99b94eb1bfa1798e797e0227ab3d2a8971a7e3f2cbdade5190d62c80715a7ecc"
+}

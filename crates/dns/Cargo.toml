@@ -1,0 +1,71 @@
+[package]
+name = "claviron-dns"
+version.workspace = true
+publish.workspace = true
+edition = "2024"
+autotests = false
+
+[features]
+default = ["server"]
+# PostgreSQL persistence and LISTEN/NOTIFY are explicit, never implied by server.
+postgres = ["service", "claviron/postgres"]
+# `service` — DnsProvider + ConfigProvider + Handler + Snapshot. The
+# read API consumed by both the UDP listener and the DoH HTTP bridge.
+# DoH-only deployments take this without the listener.
+service = [
+    "dep:claviron",
+    "dep:tokio",
+    "dep:async-trait",
+    "dep:arc-swap",
+    "dep:sqlx",
+    "dep:thiserror",
+    "dep:base64ct",
+    # TSIG for zone transfers and NOTIFY; aws-lc, as the rest of Claviron.
+    "hickory-proto/dnssec-aws-lc-rs",
+]
+# `server` — adds DnsServer (Runnable) + UDP/53 accept loop on top of
+# `service`. The listener primitive comes through the Claviron facade.
+server = [
+    "service",
+]
+# `doh` — DNS-over-HTTPS (RFC 8484) standalone Routable. Binds one
+# configured canonical hostname to `/dns-query` through Claviron's
+# vhost registry. Pulls in axum/http + bytes.
+doh = [
+    "service",
+    "claviron/edge",
+    "claviron/tls",
+    "dep:axum",
+    "dep:http",
+    "dep:bytes",
+]
+
+[dependencies]
+claviron = { workspace = true, features = ["server", "db", "resolver"], optional = true }
+
+# Always-on DNS protocol and data-shape dependencies.
+hickory-proto.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+# `service`-feature deps (provider lifecycle).
+async-trait = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+# `server`-feature deps (UDP listener only).
+tokio = { workspace = true, optional = true }
+base64ct = { workspace = true, optional = true }
+
+# `doh`-feature deps (standalone Axum endpoint).
+axum = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_yaml.workspace = true
+
+[[test]]
+name = "management_postgres"
+required-features = ["postgres"]

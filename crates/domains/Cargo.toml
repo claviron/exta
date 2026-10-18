@@ -1,0 +1,36 @@
+[package]
+name = "claviron-domains"
+version.workspace = true
+publish.workspace = true
+edition = "2024"
+description = "Registrar-held domains for a Claviron edge: store, delegation, registrar-hosted records and synchronization over pooled registrar clients"
+
+[features]
+default = []
+namecheap = ["dep:quick-xml"]
+godaddy = []
+tasks = ["claviron/tasks"]
+
+[dependencies]
+# internal
+claviron = { workspace = true, features = ["server", "hosting", "postgres", "clients"] }
+
+# always-on (used by registry trait + provider base)
+sqlx.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+arc-swap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+time.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+url.workspace = true
+hickory-proto.workspace = true
+humantime-serde.workspace = true
+
+# namecheap-only
+quick-xml = { workspace = true, optional = true }

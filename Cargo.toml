@@ -1,0 +1,77 @@
+[workspace]
+members = [
+    "crates/acme",
+    "crates/domains",
+    "crates/dns",
+    "crates/grpc",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.0-alpha.17"
+
+publish = true
+
+[workspace.dependencies]
+
+# ── Async runtime & primitives ───────────────────────────────────────
+arc-swap = "1.9"
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+humantime-serde = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat", "io"] }
+
+# ── Serialization & parsing ──────────────────────────────────────────
+quick-xml = { version = "0.42", features = ["serialize"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# ── HTTP core ────────────────────────────────────────────────────────
+bytes = "1.11"
+http = "1.5"
+http-body-util = "0.1"
+
+# ── Web framework (axum + tower) ─────────────────────────────────────
+axum = "0.8"
+tower = { version = "0.5", features = ["timeout", "limit", "util"] }
+
+# ── HTTP client ──────────────────────────────────────────────────────
+reqwest = { version = "0.13", default-features = false, features = ["http2", "json", "gzip", "brotli", "deflate", "multipart", "form", "rustls"] }
+
+# ── TLS / certificates ───────────────────────────────────────────────
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+
+# ── Crypto / hashing / encoding ──────────────────────────────────────
+base64ct = { version = "1.8", features = ["alloc"] }
+getrandom = "0.4"
+p256 = { version = "0.14", features = ["pkcs8", "pem"] }
+pkcs8 = { version = "0.11", features = ["pem"] }
+sha2 = "0.11"
+
+# ── Database / cache backends ────────────────────────────────────────
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "time"] }
+
+# ── DNS / networking utilities ───────────────────────────────────────
+hickory-proto = { version = "0.26", features = ["serde"] }
+url = { version = "2.5", features = ["serde"] }
+
+# ── gRPC / protobuf ──────────────────────────────────────────────────
+prost = "0.14"
+prost-types = "0.14"
+tonic = { version = "0.14", default-features = false, features = ["codegen", "transport"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tonic-reflection = "0.14"
+
+# ── Time / identifiers ───────────────────────────────────────────────
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+
+# ── Logging / errors ─────────────────────────────────────────────────
+thiserror = "2.0"
+tracing = "0.1"
+
+# ── Claviron facade ──────────────────────────────────────────────────
+claviron = { path = "../claviron", version = "0.2.0-alpha.17", default-features = false }

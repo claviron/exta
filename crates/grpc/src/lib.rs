@@ -1,0 +1,60 @@
+#[cfg(feature = "mtls-manager")]
+pub mod mtls_manager;
+
+#[cfg(feature = "certificate-manager")]
+pub mod certificate_manager;
+
+#[cfg(feature = "server")]
+pub mod error;
+#[cfg(feature = "server")]
+pub mod server;
+
+pub mod proto {
+    pub mod certificates {
+        tonic::include_proto!("claviron.certificates");
+    }
+    pub mod mtls {
+        include!(concat!(env!("OUT_DIR"), "/claviron.mtls.rs"));
+    }
+    pub mod dns {
+        include!(concat!(env!("OUT_DIR"), "/claviron.dns.rs"));
+    }
+    pub mod domains {
+        include!(concat!(env!("OUT_DIR"), "/claviron.domains.rs"));
+    }
+    pub mod acme {
+        include!(concat!(env!("OUT_DIR"), "/claviron.acme.rs"));
+    }
+    pub mod aliases {
+        include!(concat!(env!("OUT_DIR"), "/claviron.aliases.rs"));
+    }
+    pub mod applications {
+        include!(concat!(env!("OUT_DIR"), "/claviron.applications.rs"));
+    }
+    pub mod linked_applications {
+        include!(concat!(env!("OUT_DIR"), "/claviron.linked_applications.rs"));
+    }
+    pub mod helloworld {
+        include!(concat!(env!("OUT_DIR"), "/claviron.helloworld.rs"));
+    }
+    pub mod server {
+        include!(concat!(env!("OUT_DIR"), "/claviron.server.rs"));
+    }
+    pub mod services {
+        include!(concat!(env!("OUT_DIR"), "/claviron.services.rs"));
+    }
+    pub mod tasks {
+        include!(concat!(env!("OUT_DIR"), "/claviron.tasks.rs"));
+    }
+    pub mod workers {
+        include!(concat!(env!("OUT_DIR"), "/claviron.workers.rs"));
+    }
+}
+
+#[cfg(feature = "server")]
+pub fn register(
+    state: &claviron::runtime::AppState
+) -> claviron::runtime::registry::Result<()> {
+    use claviron::runtime::Register;
+    server::provider::GrpcServiceProvider::register(state)
+}

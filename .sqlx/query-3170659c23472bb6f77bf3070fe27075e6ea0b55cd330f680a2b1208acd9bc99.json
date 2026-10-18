@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)::bigint as \"count!\"\n            FROM chat.recipients\n            WHERE message_uuid = $1 AND delivered_at IS NOT NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3170659c23472bb6f77bf3070fe27075e6ea0b55cd330f680a2b1208acd9bc99"
+}

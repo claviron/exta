@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO chat.recipients (message_uuid, user_id)\n            VALUES ($1, $2)\n            ON CONFLICT (message_uuid, user_id) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c63e42964c7ac5f43a40e3e21b6e29ec5e920ad5647010217d7f7bcd4d120570"
+}

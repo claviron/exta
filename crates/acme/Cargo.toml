@@ -1,0 +1,51 @@
+[package]
+name = "claviron-acme"
+version.workspace = true
+publish.workspace = true
+edition = "2024"
+
+[features]
+default = []
+db = ["dep:sqlx", "claviron/hosting"]
+postgres = ["db", "claviron/postgres"]
+# ACME accounts and logs in the SQLite file `db.yaml`'s `hosting:` names.
+sqlite = ["db", "claviron/sqlite", "sqlx/sqlite"]
+tasks = ["db", "claviron/server", "claviron/tasks", "dep:futures"]
+server = [
+    "claviron/server",
+    "claviron/http",
+    "dep:tokio-util",
+    "dep:arc-swap",
+    "dep:async-trait",
+]
+
+[dependencies]
+
+claviron = { workspace = true, features = ["ssl"] }
+
+sqlx = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["fs"] }
+base64ct.workspace = true
+reqwest.workspace = true
+pkcs8.workspace = true
+p256.workspace = true
+aws-lc-rs = { version = "1.17", features = ["ring-io"] }
+pem = "4.0.0"
+sha2.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+time.workspace = true
+serde.workspace = true
+
+http.workspace = true
+getrandom.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true
+tempfile = "3.27"

@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT uuid, room, from_user_id, content, created_at\n            FROM chat.room_messages\n            WHERE room = $1\n            ORDER BY created_at DESC\n            LIMIT $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "room",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "from_user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c423d46df2136cf845f7da15a7e8d4e4ddd7f6a6709b85fef0006c4e01fa6e96"
+}
