@@ -8,7 +8,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.17"
+version = "0.2.0-alpha.18"
 
 publish = true
 
@@ -74,4 +74,4 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # ── Claviron facade ──────────────────────────────────────────────────
-claviron = { path = "../claviron", version = "0.2.0-alpha.17", default-features = false }
+claviron = { path = "../claviron", version = "0.2.0-alpha.18", default-features = false }
