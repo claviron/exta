@@ -86,11 +86,11 @@ impl Component<AppState> for DnsConfigProvider {
         "DnsConfigProvider"
     }
 
-    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
+    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
         Some(self)
     }
 
-    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
+    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
         Some(self)
     }
 }

@@ -17,6 +17,9 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 default = ["server"]
 # PostgreSQL persistence and LISTEN/NOTIFY are explicit, never implied by server.
 postgres = ["service", "claviron/postgres"]
+sqlite = ["service", "sqlx/sqlite", "claviron/sqlite", "claviron/orbit"]
+# Bind this service's authoritative snapshot as the upstream resolver.
+upstream = ["service", "claviron/upstream"]
 # `service` — DnsProvider + ConfigProvider + Handler + Snapshot. The
 # read API consumed by both the UDP listener and the DoH HTTP bridge.
 # DoH-only deployments take this without the listener.

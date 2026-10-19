@@ -1,7 +1,7 @@
 # claviron-dns
 
 Authoritative DNS for [Claviron](https://crates.io/crates/claviron), with UDP/TCP
-listeners, an optional DNS-over-HTTPS endpoint, and PostgreSQL-backed zone
+listeners, an optional DNS-over-HTTPS endpoint, and database-backed zone
 snapshots. Queries use the prepared in-memory snapshot, not SQL.
 
 ## Capabilities
@@ -10,7 +10,7 @@ snapshots. Queries use the prepared in-memory snapshot, not SQL.
 - UDP and length-prefixed TCP DNS on the configured address.
 - `GET` and `POST /dns-query` on a dedicated DoH vhost.
 - Typed zone, SOA, and record management through `management::DnsStore`.
-- PostgreSQL change notifications that rebuild and publish the serving snapshot.
+- PostgreSQL notifications or SQLite fleet events that refresh the serving snapshot.
 - TSIG-authenticated TCP zone transfers to configured secondaries, and NOTIFY
   when zone serials change.
 - An in-process resolver over the same snapshot for Claviron applications.
@@ -25,10 +25,13 @@ This is not a public recursive resolver. Queries outside owned zones are refused
 | `service` | Configuration, provider, snapshot, query handler, management store, and resolver integration; no DNS socket listener. |
 | `server` (default) | `service` plus the managed UDP/TCP listener. |
 | `postgres` | Explicit PostgreSQL backend and LISTEN/NOTIFY integration; implies `service`. |
+| `sqlite` | SQLite on the hosting DB profile and committed-write fleet events; implies `service`. |
+| `upstream` | Bind the snapshot as the upstream resolver; implies `service` and the facade's `upstream` capability. |
 | `doh` | `service` plus an exclusive Edge `/dns-query` binding and TLS integration. Does not itself select the UDP/TCP listener. |
 
-`server` does not imply `postgres`. An enabled database-backed DNS deployment
-must select it; this crate does not implement a SQLite DNS store.
+`server` does not select a database backend. Enable `postgres` or `sqlite` to
+match `db.yaml`'s `hosting:` profile. Without an explicit profile, hosting selects
+`postgres.default`; DNS does not fall back when another profile is selected.
 
 ## Register with an application
 
@@ -49,6 +52,12 @@ fn configure(state: &claviron::runtime::AppState)
 The application supplies its database configuration and the `dns` schema,
 including the serial/notification triggers. Registration does not create the
 database schema.
+
+For SQLite, select `sqlite` and configure `hosting: sqlite.hosting` in `db.yaml`.
+The selected file must contain `dns_zones`, `dns_records`, and their SOA serial
+triggers. Mutations use immediate transactions; failed writes emit no event.
+Obtain a management store through `DnsProvider::store()` to announce commits.
+Direct `DnsStore::sqlite()` / `DnsStore::open()` handles do not announce writes.
 
 ## Configuration
 
@@ -87,8 +96,11 @@ environment rather than committed configuration.
 ## Data and reload
 
 Zone and record writes commit through `management::DnsStore`. Database triggers
-own serial changes and notifications. The provider rebuilds the snapshot on
-reload, database notifications, and listener reconnect/resynchronization.
+own serial changes. PostgreSQL also owns NOTIFY publication; provider-created
+SQLite stores emit `claviron.dns.changed.v1` after commit. The provider rebuilds
+the snapshot on reload, notifications, fleet changes and listener resynchronization.
+A lagged fleet receiver reloads the full snapshot. External SQLite writers must
+explicitly request a reload; SQLite has no NOTIFY.
 Committed data and publication to every serving process are separate outcomes.
 
 Snapshot reload does not rebind sockets. Address or listener-placement changes
@@ -96,7 +108,10 @@ require a new listener generation.
 
 `DnsResolverFactory` answers names inside managed zones from the snapshot and
 can delegate other names to an application-supplied resolver factory. It is not
-bound automatically: the application chooses its `ResolverFactory` binding.
+bound by default. Enable `upstream` to register it automatically, with no
+fallthrough: names outside this service's zones fail with `NxDomain`, never a
+system DNS query. Applications needing a custom fallthrough can leave that
+feature off and bind `DnsResolverFactory` themselves.
 
 ## Transfer and protocol boundaries
 

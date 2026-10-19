@@ -6,8 +6,10 @@
 
 mod config;
 mod dns;
+#[cfg(feature = "sqlite")]
+pub(crate) mod event;
 mod handler;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod listener;
 mod resolver;
 mod snapshot;
@@ -17,7 +19,7 @@ pub use config::DohConfig;
 pub use config::{CONFIG_FILE, DnsConfig, DnsConfigProvider};
 pub use dns::DnsProvider;
 pub use handler::DnsHandler;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub use listener::DnsZoneListener;
 pub use resolver::{DnsResolver, DnsResolverFactory};
 pub(crate) use snapshot::convert_db_record_to_hickory;

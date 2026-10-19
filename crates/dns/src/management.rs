@@ -1,10 +1,12 @@
-//! Operator mutations of the existing `dns.*` schema. Queries never run on
-//! the DNS request path. Database triggers own SOA serials and notifications.
+//! Operator mutations on the hosting DB's DNS tables, never the request path.
+//! Triggers own SOA serials. PostgreSQL triggers publish NOTIFY; SQLite stores
+//! announce fleet changes only after commit.
 
 use hickory_proto::rr::Name;
 use sqlx::FromRow;
 
 pub use crate::models::actions::DnsStore;
+use crate::models::actions::{Pool, run, run_tx};
 use crate::models::records::DnsRecord;
 
 #[derive(Debug, thiserror::Error)]
@@ -134,31 +136,45 @@ impl Record {
 }
 
 impl DnsStore {
-    /// Ask existing database notification listeners to rebuild snapshots.
+    /// Ask database/fleet change listeners to rebuild snapshots.
     /// This confirms publication, not listener/fleet completion.
     pub async fn request_reload(&self) -> Result<()> {
-        sqlx::query("SELECT pg_notify('dns_zone_changed', '{}')")
-            .execute(&self.pool)
-            .await?;
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                sqlx::query("SELECT pg_notify('dns_zone_changed', '{}')")
+                    .execute(pool)
+                    .await?;
+            }
+            #[cfg(feature = "sqlite")]
+            Pool::Sqlite(_) => self.changed(),
+        }
         Ok(())
     }
     pub async fn list_zones(
         &self,
         enabled_only: bool,
     ) -> Result<Vec<Zone>> {
-        Ok(sqlx::query_as("SELECT * FROM dns.dns_zones WHERE NOT $1 OR enabled ORDER BY domain")
-            .bind(enabled_only).fetch_all(&self.pool).await?)
+        Ok(run!(
+            self,
+            query_as,
+            "SELECT * FROM dns.dns_zones WHERE NOT $1 OR enabled ORDER BY domain",
+            [enabled_only],
+            fetch_all
+        )?)
     }
 
     pub async fn get_zone(
         &self,
         name: &str,
     ) -> Result<Zone> {
-        sqlx::query_as("SELECT * FROM dns.dns_zones WHERE domain=$1")
-            .bind(domain(name)?)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(ManagementError::NotFound)
+        run!(
+            self,
+            query_as,
+            "SELECT * FROM dns.dns_zones WHERE domain=$1",
+            [domain(name)?],
+            fetch_optional
+        )?
+        .ok_or(ManagementError::NotFound)
     }
 
     pub async fn save_zone(
@@ -172,17 +188,56 @@ impl DnsStore {
         } else {
             "INSERT INTO dns.dns_zones (domain,soa_refresh,soa_retry,soa_expire,soa_minimum,soa_mname,soa_rname,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *"
         };
-        let query = sqlx::query_as(sql)
-            .bind(zone.domain)
-            .bind(zone.soa_refresh)
-            .bind(zone.soa_retry)
-            .bind(zone.soa_expire)
-            .bind(zone.soa_minimum)
-            .bind(zone.soa_mname)
-            .bind(zone.soa_rname)
-            .bind(zone.enabled);
-        let query = if updating { query.bind(zone.id) } else { query };
-        query.fetch_optional(&self.pool).await?.ok_or(ManagementError::NotFound)
+        let mut tx = self.begin().await?;
+        let saved: Option<Zone> = if updating {
+            run_tx!(
+                tx,
+                query_as,
+                sql,
+                [
+                    &zone.domain,
+                    zone.soa_refresh,
+                    zone.soa_retry,
+                    zone.soa_expire,
+                    zone.soa_minimum,
+                    &zone.soa_mname,
+                    &zone.soa_rname,
+                    zone.enabled,
+                    zone.id
+                ],
+                fetch_optional
+            )?
+        } else {
+            run_tx!(
+                tx,
+                query_as,
+                sql,
+                [
+                    &zone.domain,
+                    zone.soa_refresh,
+                    zone.soa_retry,
+                    zone.soa_expire,
+                    zone.soa_minimum,
+                    &zone.soa_mname,
+                    &zone.soa_rname,
+                    zone.enabled
+                ],
+                fetch_optional
+            )?
+        };
+        let saved = saved.ok_or(ManagementError::NotFound)?;
+        // SQLite RETURNING precedes AFTER triggers, so read the committed
+        // mutation's serial inside the same transaction before returning it.
+        let saved = run_tx!(
+            tx,
+            query_as,
+            "SELECT * FROM dns.dns_zones WHERE id=$1",
+            [saved.id],
+            fetch_one
+        )?;
+        tx.commit().await?;
+        self.changed();
+        Ok(saved)
     }
 
     pub async fn remove_zone(
@@ -190,29 +245,35 @@ impl DnsStore {
         id: i32,
         cascade: bool,
     ) -> Result<String> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
         // Parent lock excludes concurrent FK inserts until deletion commits.
-        let zone: Zone = sqlx::query_as(
+        let zone: Zone = run_tx!(
+            tx,
+            query_as,
             "SELECT * FROM dns.dns_zones WHERE id=$1 FOR UPDATE",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
+            [id],
+            fetch_optional
+        )?
         .ok_or(ManagementError::NotFound)?;
-        let nonempty: bool = sqlx::query_scalar(
+        let nonempty: bool = run_tx!(
+            tx,
+            query_scalar,
             "SELECT EXISTS(SELECT 1 FROM dns.dns_records WHERE zone_id=$1)",
-        )
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+            [id],
+            fetch_one
+        )?;
         if nonempty && !cascade {
             return Err(ManagementError::NonemptyZone);
         }
-        sqlx::query("DELETE FROM dns.dns_zones WHERE id=$1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        let _: Option<i32> = run_tx!(
+            tx,
+            query_scalar,
+            "DELETE FROM dns.dns_zones WHERE id=$1 RETURNING id",
+            [id],
+            fetch_optional
+        )?;
         tx.commit().await?;
+        self.changed();
         Ok(zone.domain)
     }
 
@@ -222,8 +283,13 @@ impl DnsStore {
         enabled_only: bool,
     ) -> Result<Vec<Record>> {
         let zone = self.get_zone(zone).await?;
-        Ok(sqlx::query_as("SELECT * FROM dns.dns_records WHERE zone_id=$1 AND (NOT $2 OR enabled) ORDER BY name,type,id")
-            .bind(zone.id).bind(enabled_only).fetch_all(&self.pool).await?)
+        Ok(run!(
+            self,
+            query_as,
+            "SELECT * FROM dns.dns_records WHERE zone_id=$1 AND (NOT $2 OR enabled) ORDER BY name,type,id",
+            [zone.id, enabled_only],
+            fetch_all
+        )?)
     }
 
     pub async fn save_record(
@@ -231,19 +297,19 @@ impl DnsStore {
         zone: Option<&str>,
         mut record: Record,
     ) -> Result<(Record, Zone)> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
         let updating = zone.is_none();
         let zone: Zone = if let Some(name) = zone {
-            sqlx::query_as(
+            run_tx!(
+                tx,
+                query_as,
                 "SELECT * FROM dns.dns_zones WHERE domain=$1 FOR UPDATE",
-            )
-            .bind(domain(name)?)
-            .fetch_optional(&mut *tx)
-            .await?
+                [domain(name)?],
+                fetch_optional
+            )?
             .ok_or(ManagementError::NotFound)?
         } else {
-            sqlx::query_as("SELECT z.* FROM dns.dns_zones z JOIN dns.dns_records r ON r.zone_id=z.id WHERE r.id=$1 FOR UPDATE OF z")
-                .bind(record.id).fetch_optional(&mut *tx).await?.ok_or(ManagementError::NotFound)?
+            run_tx!(tx, query_as, "SELECT z.* FROM dns.dns_zones z JOIN dns.dns_records r ON r.zone_id=z.id WHERE r.id=$1 FOR UPDATE OF z", [record.id], fetch_optional)?.ok_or(ManagementError::NotFound)?
         };
         record.validate(&zone.domain)?;
         // A CNAME must not coexist with another RRset (including zone-apex SOA).
@@ -251,9 +317,18 @@ impl DnsStore {
             if record.name == "@" && record.record_type == "CNAME" {
                 return Err(invalid("zone apex cannot be CNAME"));
             }
-            let conflict: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM dns.dns_records WHERE zone_id=$1 AND name=$2 AND enabled AND id<>$3 AND (type='CNAME' OR $4='CNAME'))")
-                .bind(zone.id).bind(&record.name).bind(if updating { record.id } else { 0 }).bind(&record.record_type)
-                .fetch_one(&mut *tx).await?;
+            let conflict: bool = run_tx!(
+                tx,
+                query_scalar,
+                "SELECT EXISTS(SELECT 1 FROM dns.dns_records WHERE zone_id=$1 AND name=$2 AND enabled AND id<>$3 AND (type='CNAME' OR $4='CNAME'))",
+                [
+                    zone.id,
+                    &record.name,
+                    if updating { record.id } else { 0 },
+                    &record.record_type
+                ],
+                fetch_one
+            )?;
             if conflict {
                 return Err(invalid("CNAME conflicts with existing records"));
             }
@@ -263,26 +338,54 @@ impl DnsStore {
         } else {
             "INSERT INTO dns.dns_records(zone_id,name,type,value,ttl,priority,weight,port,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *"
         };
-        let query = sqlx::query_as(sql)
-            .bind(zone.id)
-            .bind(record.name)
-            .bind(record.record_type)
-            .bind(record.value)
-            .bind(record.ttl)
-            .bind(record.priority)
-            .bind(record.weight)
-            .bind(record.port)
-            .bind(record.enabled);
-        let query = if updating { query.bind(record.id) } else { query };
-        let record = query
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(ManagementError::NotFound)?;
-        let zone = sqlx::query_as("SELECT * FROM dns.dns_zones WHERE id=$1")
-            .bind(zone.id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let saved: Option<Record> = if updating {
+            run_tx!(
+                tx,
+                query_as,
+                sql,
+                [
+                    zone.id,
+                    &record.name,
+                    &record.record_type,
+                    &record.value,
+                    record.ttl,
+                    record.priority,
+                    record.weight,
+                    record.port,
+                    record.enabled,
+                    record.id
+                ],
+                fetch_optional
+            )?
+        } else {
+            run_tx!(
+                tx,
+                query_as,
+                sql,
+                [
+                    zone.id,
+                    &record.name,
+                    &record.record_type,
+                    &record.value,
+                    record.ttl,
+                    record.priority,
+                    record.weight,
+                    record.port,
+                    record.enabled
+                ],
+                fetch_optional
+            )?
+        };
+        let record = saved.ok_or(ManagementError::NotFound)?;
+        let zone = run_tx!(
+            tx,
+            query_as,
+            "SELECT * FROM dns.dns_zones WHERE id=$1",
+            [zone.id],
+            fetch_one
+        )?;
         tx.commit().await?;
+        self.changed();
         Ok((record, zone))
     }
 
@@ -290,21 +393,27 @@ impl DnsStore {
         &self,
         id: i32,
     ) -> Result<Zone> {
-        let mut tx = self.pool.begin().await?;
-        let zone: Zone = sqlx::query_as("SELECT z.* FROM dns.dns_zones z JOIN dns.dns_records r ON r.zone_id=z.id WHERE r.id=$1 FOR UPDATE OF z")
-            .bind(id).fetch_optional(&mut *tx).await?.ok_or(ManagementError::NotFound)?;
-        let removed = sqlx::query("DELETE FROM dns.dns_records WHERE id=$1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        if removed.rows_affected() == 0 {
+        let mut tx = self.begin().await?;
+        let zone: Zone = run_tx!(tx, query_as, "SELECT z.* FROM dns.dns_zones z JOIN dns.dns_records r ON r.zone_id=z.id WHERE r.id=$1 FOR UPDATE OF z", [id], fetch_optional)?.ok_or(ManagementError::NotFound)?;
+        let removed: Option<i32> = run_tx!(
+            tx,
+            query_scalar,
+            "DELETE FROM dns.dns_records WHERE id=$1 RETURNING id",
+            [id],
+            fetch_optional
+        )?;
+        if removed.is_none() {
             return Err(ManagementError::NotFound);
         }
-        let zone = sqlx::query_as("SELECT * FROM dns.dns_zones WHERE id=$1")
-            .bind(zone.id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let zone = run_tx!(
+            tx,
+            query_as,
+            "SELECT * FROM dns.dns_zones WHERE id=$1",
+            [zone.id],
+            fetch_one
+        )?;
         tx.commit().await?;
+        self.changed();
         Ok(zone)
     }
 }

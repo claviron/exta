@@ -53,33 +53,26 @@ impl DnsProvider {
         if !self.config_snapshot().enabled {
             return Err(RegistryError::msg("DNS is disabled"));
         }
-        Self::postgres_pool(&self.state).map(crate::management::DnsStore::new)
-    }
-
-    fn postgres_pool(
-        state: &AppState
-    ) -> claviron::runtime::registry::Result<sqlx::PgPool> {
-        Self::pool_from(
-            state.registry_ref().resolve::<claviron::db::DbService>(),
+        self.store_from(
+            self.state.registry_ref().resolve::<claviron::db::DbService>(),
         )
     }
 
-    fn pool_from(
-        db: Option<Arc<claviron::db::DbService>>
-    ) -> claviron::runtime::registry::Result<sqlx::PgPool> {
-        #[cfg(feature = "postgres")]
-        {
-            db.and_then(|db| db.postgres()).ok_or_else(|| {
-                RegistryError::msg("DNS postgres pool unavailable")
-            })
+    fn store_from(
+        &self,
+        db: Option<Arc<claviron::db::DbService>>,
+    ) -> claviron::runtime::registry::Result<crate::management::DnsStore> {
+        let db =
+            db.ok_or_else(|| RegistryError::msg("DNS requires DbService"))?;
+        let store = crate::management::DnsStore::open(&db)?;
+        #[cfg(feature = "sqlite")]
+        if matches!(&store.pool, crate::models::actions::Pool::Sqlite(_)) {
+            let bus = self.state.events().bus().clone();
+            return Ok(store.announcing(Arc::new(move || {
+                bus.emit(super::event::DnsChanged)
+            })));
         }
-        #[cfg(not(feature = "postgres"))]
-        {
-            let _ = db;
-            Err(RegistryError::msg(
-                "DNS persistence requires the `postgres` feature; SQLite DNS is not implemented",
-            ))
-        }
+        Ok(store)
     }
 
     fn cfg_provider(&self) -> &DnsConfigProvider {
@@ -273,8 +266,16 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps> for DnsProvider {
         if !self.config_snapshot().enabled {
             return Ok(());
         }
-        let pool = Self::pool_from(db)?;
-        let store = crate::models::actions::DnsStore::new(pool);
+        let store = self.store_from(db)?;
+        #[cfg(feature = "sqlite")]
+        if matches!(&store.pool, crate::models::actions::Pool::Sqlite(_))
+            && let Some(events) = _state
+                .registry_ref()
+                .resolve::<claviron::orbit::FleetEventRegistry>(
+            )
+        {
+            events.register_bridge::<super::event::DnsChanged>(_state)?;
+        }
         let snapshot = DnsSnapshot::from_store(&store).await?;
         // No NOTIFY here: at boot the listeners are not up yet. The server
         // announces the zones once its TCP listener is bound.
@@ -340,8 +341,7 @@ impl DnsProvider {
         }
 
         info!("🔄 Reloading DNS records from database...");
-        let pool = Self::postgres_pool(state)?;
-        let store = crate::models::actions::DnsStore::new(pool);
+        let store = self.store()?;
         let snapshot = DnsSnapshot::from_store(&store).await?;
         let installed = self.install_snapshot(snapshot);
         self.notify_secondaries(state, installed).await;

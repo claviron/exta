@@ -22,7 +22,7 @@ pub mod server;
 #[cfg(feature = "doh")]
 pub mod doh;
 
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub use providers::DnsZoneListener;
 #[cfg(feature = "doh")]
 pub use providers::DohConfig;
@@ -54,11 +54,27 @@ pub fn register(
     DnsConfigProvider::register(state)?;
     DnsProvider::register(state)?;
 
-    // Every process that serves DNS keeps its snapshot current from roma's
-    // change notifications; see `providers::listener`.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "upstream")]
+    {
+        use claviron::resolver::ResolverFactory;
+        use std::sync::Arc;
+        let dns = registry
+            .resolve::<DnsProvider>()
+            .expect("DNS provider registered above");
+        registry.insert(Arc::new(DnsResolverFactory::new(
+            dns.as_ref().clone(),
+            None,
+        )))?;
+        registry.bind_dyn::<dyn ResolverFactory, DnsResolverFactory>(
+            |factory| factory,
+        )?;
+    }
+
+    // Every serving process follows the selected DB's notifications or fleet
+    // events; see `providers::listener`.
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     registry.register(std::sync::Arc::new(DnsZoneListener))?;
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(not(any(feature = "postgres", feature = "sqlite")))]
     let _ = registry;
 
     #[cfg(feature = "server")]

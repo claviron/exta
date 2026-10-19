@@ -1,29 +1,19 @@
-//! Reload the DNS snapshot when roma says a zone changed.
-//!
-//! roma's triggers send `dns_zone_changed` on every change to `dns.dns_zones`
-//! or `dns.dns_records`, and move the zone's SOA serial in the same
-//! transaction. Each process that serves DNS listens and reloads its own
-//! snapshot; the master (or a single process) also sends NOTIFY, as a reload
-//! always does. Workers never talk to the secondaries.
-//!
-//! The connection comes from the application's Postgres pool through
-//! `claviron::db::ChannelListener`, like every Claviron listener: a dropped
-//! connection is replaced, a gap is answered with a reload, and a database
-//! that does not answer is waited for, never retried on a clock.
+//! Follow the hosting profile: PostgreSQL NOTIFY or SQLite fleet events.
+//! Every process rebuilds its serving snapshot, including the writer.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(feature = "postgres")]
 use claviron::db::{ChannelListener, Notice};
-use claviron::runtime::registry::{
-    Component, Error as RegistryError, Runnable, priority,
-};
+use claviron::runtime::registry::{Component, Error, Runnable, priority};
 use claviron::runtime::{AppState, RunContext};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use super::dns::DnsProvider;
+use crate::models::actions::Pool;
 
-/// The channel roma's DNS triggers notify on.
+#[cfg(feature = "postgres")]
 const CHANNEL: &str = "dns_zone_changed";
 
 #[derive(Default)]
@@ -36,11 +26,9 @@ impl Component<AppState> for DnsZoneListener {
     fn name(&self) -> &'static str {
         "DnsZoneListener"
     }
-
     fn run_priority(&self) -> Option<u8> {
         Some(priority::LATE)
     }
-
     fn as_runnable(
         self: Arc<Self>
     ) -> Option<Arc<dyn Runnable<AppState, Self::Deps>>> {
@@ -54,41 +42,72 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps>
 {
     async fn run(
         self: Arc<Self>,
-        (provider, db): <Self as Component<AppState>>::Deps,
+        (provider, _db): <Self as Component<AppState>>::Deps,
         state: AppState,
         context: RunContext,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<(), Error> {
         if !provider.config_snapshot().enabled {
             return Ok(());
         }
-        let pool = db.and_then(|db| db.postgres()).ok_or_else(|| {
-            RegistryError::msg("DnsZoneListener: postgres pool unavailable")
-        })?;
-
-        let mut channel = tokio::select! {
-            _ = context.cancelled() => return Ok(()),
-            channel = ChannelListener::open(&state, &pool, &[CHANNEL]) => channel
-        };
-        info!("👂 DNS listening on '{CHANNEL}'");
-
-        loop {
-            let notice = tokio::select! {
-                _ = context.cancelled() => break,
-                notice = channel.next() => notice
-            };
-            // A reload reads every zone, so a change and a gap are handled
-            // alike; several notifications that arrived together are one.
-            match notice {
-                Notice::Changed(notifications) => {
-                    debug!(count = notifications.len(), "DNS zone change")
+        let store = provider.store()?;
+        match store.pool {
+            #[cfg(feature = "sqlite")]
+            Pool::Sqlite(_) => {
+                use tokio::sync::broadcast::error::RecvError;
+                let mut events =
+                    state.events().subscribe::<super::event::DnsChanged>();
+                // Subscribe before reading: close the gap between boot's
+                // initial snapshot and the listener becoming runnable.
+                provider.reload_from_database(&state).await?;
+                info!("DNS listening for committed fleet changes");
+                loop {
+                    let received = tokio::select! {
+                        _ = context.cancelled() => return Ok(()),
+                        received = events.recv() => received,
+                    };
+                    match received {
+                        Ok(_) | Err(RecvError::Lagged(_)) => {
+                            provider.reload_from_database(&state).await.map_err(|error| {
+                                Error::recoverable(format!("DNS fleet snapshot reload failed: {error}"))
+                            })?;
+                        }
+                        Err(RecvError::Closed) => return Ok(()),
+                    }
                 }
-                Notice::Resync => info!("DNS resync after a listener gap"),
             }
-            if let Err(error) = provider.reload_from_database(&state).await {
-                warn!("DNS reload failed: {error}");
-                channel.missed();
+            #[cfg(feature = "postgres")]
+            Pool::Postgres(pool) => {
+                let mut channel = tokio::select! {
+                    _ = context.cancelled() => return Ok(()),
+                    channel = ChannelListener::open(&state, &pool, &[CHANNEL]) => channel,
+                };
+                info!("DNS listening on '{CHANNEL}'");
+                loop {
+                    let notice = tokio::select! {
+                        _ = context.cancelled() => return Ok(()),
+                        notice = channel.next() => notice,
+                    };
+                    match notice {
+                        Notice::Changed(notifications) => tracing::debug!(
+                            count = notifications.len(),
+                            "DNS zone change"
+                        ),
+                        Notice::Resync => {
+                            info!("DNS resync after a listener gap")
+                        }
+                    }
+                    if let Err(error) =
+                        provider.reload_from_database(&state).await
+                    {
+                        tracing::warn!("DNS reload failed: {error}");
+                        channel.missed();
+                    }
+                }
             }
+            #[cfg(not(feature = "postgres"))]
+            Pool::Postgres(_) => Err(Error::msg(
+                "DNS PostgreSQL listener requires the postgres feature",
+            )),
         }
-        Ok(())
     }
 }
