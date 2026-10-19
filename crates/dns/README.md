@@ -34,8 +34,8 @@ must select it; this crate does not implement a SQLite DNS store.
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.17", default-features = false, features = ["server", "postgres"] }
-claviron-dns = { version = "0.2.0-alpha.17", default-features = false, features = ["server", "postgres"] }
+claviron = { version = "0.2.0-alpha.18", default-features = false, features = ["server", "postgres"] }
+claviron-dns = { version = "0.2.0-alpha.18", default-features = false, features = ["server", "postgres"] }
 ```
 
 ```rust

@@ -2,8 +2,14 @@
 name = "claviron-domains"
 version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 edition = "2024"
 description = "Registrar-held domains for a Claviron edge: store, delegation, registrar-hosted records and synchronization over pooled registrar clients"
+documentation = "https://docs.rs/claviron-domains"
+keywords = ["domains", "dns", "registrar", "claviron"]
+categories = ["network-programming"]
 
 [features]
 default = []

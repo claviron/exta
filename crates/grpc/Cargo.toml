@@ -2,6 +2,13 @@
 name = "claviron-grpc"
 version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Typed mTLS-secured administration services for Claviron"
+documentation = "https://docs.rs/claviron-grpc"
+keywords = ["grpc", "mtls", "claviron"]
+categories = ["network-programming", "asynchronous"]
 edition = "2024"
 autotests = false
 
