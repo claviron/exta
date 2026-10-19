@@ -47,7 +47,11 @@ pub(crate) async fn serve_tcp(
 ) -> Result<()> {
     let listen_addr =
         listener.local_addr().map_err(|e| RegistryError::msg(e.to_string()))?;
-    info!("🌐 DNS TCP server listening on {}", listen_addr);
+    if provider.state().is_worker() {
+        debug!("🌐 DNS TCP server listening on {}", listen_addr);
+    } else {
+        info!("🌐 DNS TCP server listening on {}", listen_addr);
+    }
 
     let mut connections = tokio::task::JoinSet::new();
     loop {

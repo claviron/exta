@@ -33,17 +33,22 @@ pub const CONFIG_FILE: &str = "dns.yaml";
 pub struct DnsConfigProvider {
     config_path: PathBuf,
     snapshot: ArcSwap<DnsConfig>,
+    worker: bool,
 }
 
 impl DnsConfigProvider {
     pub fn new(state: &AppState) -> Self {
-        Self::empty(state.config_dir().join(CONFIG_FILE))
+        Self {
+            worker: state.is_worker(),
+            ..Self::empty(state.config_dir().join(CONFIG_FILE))
+        }
     }
 
     pub fn empty(config_path: PathBuf) -> Self {
         Self {
             config_path,
             snapshot: ArcSwap::from_pointee(DnsConfig::default()),
+            worker: false,
         }
     }
 
@@ -66,7 +71,17 @@ impl DnsConfigProvider {
         config: &DnsConfig,
     ) {
         self.snapshot.store(Arc::new(config.clone()));
-        info!("📦 DnsConfigProvider applied {}", self.config_path.display());
+        if self.worker {
+            tracing::debug!(
+                "📦 DnsConfigProvider applied {}",
+                self.config_path.display()
+            );
+        } else {
+            info!(
+                "📦 DnsConfigProvider applied {}",
+                self.config_path.display()
+            );
+        }
     }
 }
 

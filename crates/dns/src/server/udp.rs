@@ -42,7 +42,11 @@ pub(crate) async fn serve_udp(
         RegistryError::msg(format!("DNS UdpSocket::from_std: {e}"))
     })?);
 
-    info!("🌐 DNS UDP server listening on {}", listen_addr);
+    if provider.state().is_worker() {
+        debug!("🌐 DNS UDP server listening on {}", listen_addr);
+    } else {
+        info!("🌐 DNS UDP server listening on {}", listen_addr);
+    }
 
     let mut buf = vec![0u8; 4096];
     let mut requests = tokio::task::JoinSet::new();

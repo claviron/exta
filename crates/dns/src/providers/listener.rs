@@ -59,7 +59,13 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps>
                 // Subscribe before reading: close the gap between boot's
                 // initial snapshot and the listener becoming runnable.
                 provider.reload_from_database(&state).await?;
-                info!("DNS listening for committed fleet changes");
+                if state.is_worker() {
+                    tracing::debug!(
+                        "DNS listening for committed fleet changes"
+                    );
+                } else {
+                    info!("DNS listening for committed fleet changes");
+                }
                 loop {
                     let received = tokio::select! {
                         _ = context.cancelled() => return Ok(()),
@@ -81,7 +87,11 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps>
                     _ = context.cancelled() => return Ok(()),
                     channel = ChannelListener::open(&state, &pool, &[CHANNEL]) => channel,
                 };
-                info!("DNS listening on '{CHANNEL}'");
+                if state.is_worker() {
+                    tracing::debug!("DNS listening on '{CHANNEL}'");
+                } else {
+                    info!("DNS listening on '{CHANNEL}'");
+                }
                 loop {
                     let notice = tokio::select! {
                         _ = context.cancelled() => return Ok(()),

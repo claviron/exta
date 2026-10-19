@@ -130,10 +130,18 @@ impl DnsProvider {
         let new_handler = DnsHandler::new(snap_arc.clone());
         let previous = self.snapshot.swap(Some(snap_arc.clone()));
         self.handler.store(Some(Arc::new(new_handler)));
-        info!(
-            "✅ DNS snapshot installed domains={} record_sets={}",
-            domains, record_sets
-        );
+        if self.state.is_worker() {
+            tracing::debug!(
+                "✅ DNS snapshot installed domains={} record_sets={}",
+                domains,
+                record_sets
+            );
+        } else {
+            info!(
+                "✅ DNS snapshot installed domains={} record_sets={}",
+                domains, record_sets
+            );
+        }
         (previous, snap_arc)
     }
 
@@ -280,7 +288,11 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps> for DnsProvider {
         // No NOTIFY here: at boot the listeners are not up yet. The server
         // announces the zones once its TCP listener is bound.
         let _ = self.install_snapshot(snapshot);
-        info!("📦 DnsProvider booted");
+        if _state.is_worker() {
+            tracing::debug!("📦 DnsProvider booted");
+        } else {
+            info!("📦 DnsProvider booted");
+        }
         Ok(())
     }
 }
@@ -340,7 +352,11 @@ impl DnsProvider {
             return Ok(());
         }
 
-        info!("🔄 Reloading DNS records from database...");
+        if state.is_worker() {
+            tracing::debug!("🔄 Reloading DNS records from database...");
+        } else {
+            info!("🔄 Reloading DNS records from database...");
+        }
         let store = self.store()?;
         let snapshot = DnsSnapshot::from_store(&store).await?;
         let installed = self.install_snapshot(snapshot);

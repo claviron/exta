@@ -30,6 +30,7 @@ pub struct AcmeProvider {
     config_path: PathBuf,
     snapshot: ArcSwapOption<AcmeConfig>,
     http01_directory: Arc<Http01ChallengeDirectory>,
+    worker: bool,
 }
 
 impl AcmeProvider {
@@ -37,7 +38,12 @@ impl AcmeProvider {
         config_path: PathBuf,
         http01_directory: Arc<Http01ChallengeDirectory>,
     ) -> Self {
-        Self { config_path, snapshot: ArcSwapOption::empty(), http01_directory }
+        Self {
+            config_path,
+            snapshot: ArcSwapOption::empty(),
+            http01_directory,
+            worker: false,
+        }
     }
 
     pub fn snapshot(&self) -> Option<Arc<AcmeConfig>> {
@@ -53,7 +59,17 @@ impl AcmeProvider {
                 self.http01_directory
                     .publish(Some(cfg.challenges_dir().clone()));
                 self.snapshot.store(Some(Arc::new(cfg.clone())));
-                info!("📦 AcmeService applied {}", self.config_path.display());
+                if self.worker {
+                    tracing::debug!(
+                        "📦 AcmeService applied {}",
+                        self.config_path.display()
+                    );
+                } else {
+                    info!(
+                        "📦 AcmeService applied {}",
+                        self.config_path.display()
+                    );
+                }
             }
             None => {
                 self.snapshot.store(None);
@@ -75,10 +91,13 @@ impl Register<AppState> for AcmeProvider {
         state.bind_config_environment::<Self>()?;
         let http01_directory = Arc::new(Http01ChallengeDirectory::default());
         registry.insert(http01_directory.clone())?;
-        registry.register(Arc::new(AcmeProvider::empty(
-            state.config_dir().join(CONFIG_FILE),
-            http01_directory,
-        )))?;
+        registry.register(Arc::new(AcmeProvider {
+            worker: state.is_worker(),
+            ..AcmeProvider::empty(
+                state.config_dir().join(CONFIG_FILE),
+                http01_directory,
+            )
+        }))?;
         Ok(())
     }
 }
