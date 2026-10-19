@@ -11,6 +11,7 @@ keywords = ["grpc", "mtls", "claviron"]
 categories = ["network-programming", "asynchronous"]
 edition = "2024"
 autotests = false
+include = ["src/**", "proto/*.proto", "build.rs", "Cargo.toml", "README.md", "LICENSE-*"]
 
 # ─────────────────────────────────────────────────────────────────────
 # Features

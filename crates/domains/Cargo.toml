@@ -10,6 +10,7 @@ description = "Registrar-held domains for a Claviron edge: store, delegation, re
 documentation = "https://docs.rs/claviron-domains"
 keywords = ["domains", "dns", "registrar", "claviron"]
 categories = ["network-programming"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = []

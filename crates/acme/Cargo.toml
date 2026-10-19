@@ -10,6 +10,7 @@ documentation = "https://docs.rs/claviron-acme"
 keywords = ["acme", "tls", "certificates", "claviron"]
 categories = ["network-programming", "web-programming::http-server"]
 edition = "2024"
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = []
