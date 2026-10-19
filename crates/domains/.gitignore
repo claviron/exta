@@ -95,13 +95,8 @@ Desktop.ini
 core
 core.*
 
-# --- Vibe Coding
-/.claude
+# --- docs
 *.md
 !README.md
-!AGENTS.local.md
-!CLAUDE.md
-!AGENTS.md
 !SKILL.md
-!ARCHITECTURE.md
 !CONTRIBUTING.md

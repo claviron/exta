@@ -86,6 +86,6 @@ core.*
 # docs
 *.md
 !README.md
-!/CONTRIBUTING.md
-!/SECURITY.md
-!/.agents/skills/*/SKILL.md
+!CONTRIBUTING.md
+!SECURITY.md
+!SKILL.md
