@@ -81,9 +81,9 @@ acme = [
 # ── Proto / shared server dependencies ───────────────────────────────
 claviron = { workspace = true, optional = true }
 # ── Server-only (gated by `server` feature) ──────────────────────────
-claviron-acme = { version = "0.2.0-alpha.18", path = "../acme", optional = true }
-claviron-dns = { version = "0.2.0-alpha.18", path = "../dns", default-features = false, features = ["service"], optional = true }
-claviron-domains = { version = "0.2.0-alpha.18", path = "../domains", default-features = false, features = ["godaddy", "namecheap"], optional = true }
+claviron-acme = { version = "0.2.0-alpha.19", path = "../acme", optional = true }
+claviron-dns = { version = "0.2.0-alpha.19", path = "../dns", default-features = false, features = ["service"], optional = true }
+claviron-domains = { version = "0.2.0-alpha.19", path = "../domains", default-features = false, features = ["godaddy", "namecheap"], optional = true }
 
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
