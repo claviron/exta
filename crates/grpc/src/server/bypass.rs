@@ -49,11 +49,17 @@ impl BypassHandler for ManagementGrpcHandler {
         &self,
         mut req: Request<RouteBody>,
     ) -> RouteFuture {
-        if req.version() != http::Version::HTTP_2 {
+        let version = req.version();
+        // Framing and TLS belong to the accepting Edge transport. Tonic's
+        // service consumes the same request body/trailer contract on H2/H3.
+        if !matches!(version, http::Version::HTTP_2 | http::Version::HTTP_3) {
             return Box::pin(async move {
-                Ok(status_response(Status::failed_precondition(
-                    "management gRPC requires HTTP/2",
-                )))
+                Ok(status_response(
+                    Status::failed_precondition(
+                        "management gRPC requires HTTP/2 or HTTP/3",
+                    ),
+                    version,
+                ))
             });
         }
 
@@ -69,7 +75,9 @@ impl BypassHandler for ManagementGrpcHandler {
         if let Some(status) =
             self.auth_guard.connection_status(client_cert_present)
         {
-            return Box::pin(async move { Ok(status_response(status)) });
+            return Box::pin(
+                async move { Ok(status_response(status, version)) },
+            );
         }
 
         if let Some(conn_info) = conn_info {
@@ -103,9 +111,10 @@ impl BypassHandler for ManagementGrpcHandler {
 
         Box::pin(async move {
             let Ok(_permit) = permits.acquire_owned().await else {
-                return Ok(status_response(Status::unavailable(
-                    "gRPC service is shutting down",
-                )));
+                return Ok(status_response(
+                    Status::unavailable("gRPC service is shutting down"),
+                    version,
+                ));
             };
 
             match request_timeout {
@@ -116,15 +125,16 @@ impl BypassHandler for ManagementGrpcHandler {
                     )
                     .await
                     {
-                        Ok(Ok(resp)) => Ok(route_response(resp)),
+                        Ok(Ok(resp)) => Ok(route_response(resp, version)),
                         Ok(Err(err)) => match err {},
                         Err(_) => Ok(status_response(
                             Status::deadline_exceeded("gRPC request timed out"),
+                            version,
                         )),
                     }
                 }
                 None => match routes.oneshot(req).await {
-                    Ok(resp) => Ok(route_response(resp)),
+                    Ok(resp) => Ok(route_response(resp, version)),
                     Err(err) => match err {},
                 },
             }
@@ -163,12 +173,22 @@ impl AuthGuard {
     }
 }
 
-fn route_response(resp: Response<tonic::body::Body>) -> RouteResponse {
-    resp.map(boxed_body)
+fn route_response(
+    resp: Response<tonic::body::Body>,
+    version: http::Version,
+) -> RouteResponse {
+    let mut response = resp.map(boxed_body);
+    // Tonic creates HTTP/2 responses. Keep the accepted transport's version
+    // without changing gRPC status, metadata, data frames or trailers.
+    *response.version_mut() = version;
+    response
 }
 
-fn status_response(status: Status) -> RouteResponse {
-    route_response(status.into_http::<tonic::body::Body>())
+fn status_response(
+    status: Status,
+    version: http::Version,
+) -> RouteResponse {
+    route_response(status.into_http::<tonic::body::Body>(), version)
 }
 
 fn conn_info_from_ctx(ctx: &ConnCtx) -> ConnInfo {
@@ -189,6 +209,10 @@ fn common_name_from_subject(subject: &str) -> Option<String> {
             .map(ToOwned::to_owned)
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/server/bypass_protocol.rs"]
+mod protocol_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@ use super::{ManagementTransport, ServiceAction, command_transport};
 
 #[test]
 fn management_cannot_stop_or_restart_its_own_transport() {
-    for name in ["GrpcListener", "HttpsServer"] {
+    for name in ["GrpcListener", "HttpsServer", "H3Server"] {
         let owner = ManagementTransport(name);
         for action in [ServiceAction::Stop, ServiceAction::Restart] {
             let error =

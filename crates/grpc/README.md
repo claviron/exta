@@ -2,7 +2,7 @@
 
 Typed, mTLS-secured administration for
 [Claviron](https://crates.io/crates/claviron). Serve management RPCs on a dedicated
-HTTP/2 listener, an exclusive Edge vhost, or both, using the same prepared Tonic
+HTTP/2 listener, an exclusive HTTP/2 or HTTP/3 Edge vhost, or both, using the same prepared Tonic
 service set.
 
 Generated protobuf messages, service definitions, and client stubs are available
@@ -72,10 +72,14 @@ max_requests: 100
 ```
 
 `management` is a canonical vhost key. Its existing Edge policy must allow
-HTTP/2, provide a server certificate, and require trusted client certificates
+HTTP/2 or HTTP/3, provide a server certificate, and require trusted client certificates
 with `tls.client_auth.mode: required`. Public hostnames belong to that host's
 aliases. The management binding is exclusive, not merged into an application
-router. Plaintext and non-H2 requests cannot enter RPC handling.
+router. Plaintext, unverified clients and HTTP/1 requests cannot enter RPC handling.
+H3 uses Edge's existing QUIC listener and body/trailer handling; there is no
+gRPC-specific H3 feature or dedicated QUIC listener. The application selects
+Claviron's `http3` feature and permits H3 on its management vhost. Clients
+must independently support gRPC over H3; H2 clients continue to use H2.
 
 ## Dedicated listener
 
