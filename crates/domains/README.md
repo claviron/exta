@@ -41,8 +41,8 @@ another registrar workflow.
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.18", default-features = false, features = ["server", "postgres"] }
-claviron-domains = { version = "0.2.0-alpha.18", features = ["godaddy", "namecheap", "tasks"] }
+claviron = { version = "0.2.0-alpha.19", default-features = false, features = ["server", "postgres"] }
+claviron-domains = { version = "0.2.0-alpha.19", features = ["godaddy", "namecheap", "tasks"] }
 ```
 
 ```rust
