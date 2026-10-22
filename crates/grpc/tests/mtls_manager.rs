@@ -49,6 +49,23 @@ async fn ca_server_and_client_material_stays_in_database() {
     let issuer = store.issuer_by_name("root.test").await.unwrap().unwrap();
     let authority =
         CertAuthority::from_issuer(&store, "root.test").await.unwrap();
+    let configured = MtlsManager::new(
+        store.clone(),
+        Some(1),
+        Some(Arc::new(authority.clone())),
+    );
+    let default_client = configured
+        .create_certificate(CreateCertificateRequest {
+            issuer: None,
+            common_name: "default-client.test".into(),
+            aliases: vec![],
+            validity_days: 1,
+            kind: crate::proto::mtls::CertificateKind::Client as i32,
+            ca_path_len: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(default_client.issuer_id, Some(issuer.id));
     for (kind, name, server) in [
         (CertificateKind::Client, "client.test", None),
         (CertificateKind::Server, "server.test", Some(1)),

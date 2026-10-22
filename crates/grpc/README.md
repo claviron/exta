@@ -127,6 +127,9 @@ Direct `MtlsManager` and `CertificateManager` calls use the same issuance/store
 logic without requiring a network request; the calling application must enforce
 its own identity, ownership, and private-key export permissions.
 
+`CertAuthority` supplies public trust only. Local issuance explicitly acquires
+a `CertSigner` for the selected authority; reading trust does not load its CA key.
+
 Local issuance, certificate import/export, and ACME issuance are separate
 operations. Import does not silently issue a replacement certificate or alter
 runtime trust. Creating or renewing a CA does not automatically replace the

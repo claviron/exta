@@ -13,7 +13,7 @@ use claviron::hosting::{
 use claviron::runtime::AppState;
 use claviron::ssl::parsers::take_first_cert_from_der;
 use claviron::ssl::{Host, KeyString};
-use claviron::tls::CertAuthority;
+use claviron::tls::{CertAuthority, CertSigner};
 use time::OffsetDateTime;
 use tonic::Status;
 
@@ -227,16 +227,21 @@ impl MtlsManager {
         };
         let authority = if let Some(name) = issuer_name {
             std::sync::Arc::new(
-                CertAuthority::from_issuer(hosting, &name).await.map_err(
+                CertSigner::from_issuer(hosting, &name).await.map_err(
                     |error| Status::failed_precondition(error.to_string()),
                 )?,
             )
         } else {
-            self.authority.clone().ok_or_else(|| {
+            let authority = self.authority.as_ref().ok_or_else(|| {
                 Status::failed_precondition(
                     "CertStore authority is not configured",
                 )
-            })?
+            })?;
+            Arc::new(
+                CertSigner::from_authority(hosting, authority).await.map_err(
+                    |error| Status::failed_precondition(error.to_string()),
+                )?,
+            )
         };
         authority
             .validate_issuer(hosting)
