@@ -10,6 +10,12 @@ pub mod error;
 pub mod server;
 
 pub mod proto {
+    pub mod management {
+        tonic::include_proto!("claviron.management");
+    }
+    pub mod users {
+        tonic::include_proto!("claviron.users");
+    }
     pub mod certificates {
         tonic::include_proto!("claviron.certificates");
     }
@@ -50,6 +56,10 @@ pub mod proto {
         include!(concat!(env!("OUT_DIR"), "/claviron.workers.rs"));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/users_protocol.rs"]
+mod users_protocol_tests;
 
 #[cfg(feature = "server")]
 pub fn register(

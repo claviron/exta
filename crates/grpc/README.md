@@ -61,6 +61,19 @@ Database-backed operations require the configured hosting store and schema.
 Protobuf generation uses `protoc` at build time, including protocol-only builds.
 The [proto directory](proto) contains the source contracts.
 
+## User-management protocol
+
+[users.proto](proto/users.proto) defines schema discovery, user/role/permission
+record management, and direct assignment operations. Application-defined JSON
+fields and optional UI metadata use the shared
+[management.proto](proto/management.proto) envelope. Public references and
+revision tokens are opaque; no common users table or fixed profile fields are
+required. Validation and management scope belong to the downstream application.
+
+Generated protocol types and client stubs are available now. No user-management
+handler or route is installed by `server`; an application adapter and GUI are
+not part of this protocol-only surface.
+
 ## Vhost configuration
 
 `grpc.yaml` is read from the application's Claviron configuration directory:
