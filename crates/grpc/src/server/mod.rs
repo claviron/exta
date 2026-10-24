@@ -1,3 +1,4 @@
+pub(crate) mod access;
 #[cfg(feature = "acme")]
 pub(crate) mod acme;
 pub(crate) mod aliases;
@@ -18,6 +19,8 @@ pub mod service;
 pub(crate) mod services;
 #[cfg(feature = "tasks")]
 pub(crate) mod tasks;
+#[cfg(any(feature = "users", feature = "authorization"))]
+pub mod users;
 #[cfg(feature = "workers")]
 pub(crate) mod workers;
 

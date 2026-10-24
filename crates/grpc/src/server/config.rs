@@ -17,6 +17,9 @@ pub const CONFIG_FILE: &str = "grpc.yaml";
 #[derive(Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcConfig {
+    #[cfg(any(feature = "users", feature = "authorization"))]
+    #[serde(default)]
+    pub user_management: Option<super::users::Limits>,
     #[serde(default)]
     pub listener: Option<ListenerConfig>,
     #[serde(default, deserialize_with = "one_or_many", alias = "vhost")]
@@ -143,6 +146,8 @@ pub struct ListenerConfig {
 impl Default for GrpcConfig {
     fn default() -> Self {
         Self {
+            #[cfg(any(feature = "users", feature = "authorization"))]
+            user_management: None,
             listener: None,
             vhosts: Vec::new(),
             request_timeout: default_request_timeout(),

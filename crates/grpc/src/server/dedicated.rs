@@ -429,11 +429,16 @@ async fn serve(
         .peer_certificates()
         .and_then(|certs| certs.first())
         .and_then(|cert| {
-            claviron::ssl::parsers::take_first_cert_from_der(cert.as_ref()).ok()
-        })
-        .map(|cert| TlsClientCertInfo {
-            subject_dn: cert.subject().to_string(),
-            issuer_dn: cert.issuer().to_string(),
+            let parsed =
+                claviron::ssl::parsers::take_first_cert_from_der(cert.as_ref())
+                    .ok()?;
+            Some(TlsClientCertInfo {
+                subject_dn: parsed.subject().to_string(),
+                issuer_dn: parsed.issuer().to_string(),
+                identity: claviron::ssl::peer::peer_identity(cert.as_ref())
+                    .ok()
+                    .map(Arc::new),
+            })
         });
     let ctx = Arc::new(ConnCtx {
         listener: ListenerId::try_from("grpc-dedicated".to_owned())

@@ -33,6 +33,7 @@ server = [
     "claviron/edge",
     "claviron/tls",
     "claviron/hosting",
+    "claviron/auth",
     "claviron-acme?/server",
     # transport / middleware / TLS termination
     "dep:http",
@@ -55,6 +56,8 @@ server = [
     "dep:time",
 ]
 tasks = ["claviron/tasks"]
+users = ["server", "claviron/users", "dep:serde_json"]
+authorization = ["server", "claviron/authorization", "dep:serde_json"]
 workers = ["server"]
 metrics = ["server", "claviron/metrics"]
 dns = ["server", "dep:claviron-dns"]
@@ -102,6 +105,7 @@ prost-types.workspace = true
 rustls = { workspace = true, optional = true }
 
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 

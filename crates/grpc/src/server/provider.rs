@@ -66,7 +66,7 @@ impl GrpcServiceProvider {
             self.routes.write().expect("grpc routes lock poisoned");
         if routes.is_none() {
             *routes = Some((
-                super::service::create_management_routes(state)?,
+                super::service::create_management_routes(state.clone())?,
                 Arc::new(Semaphore::new(cfg.max_requests)),
             ));
         }
@@ -76,6 +76,7 @@ impl GrpcServiceProvider {
             permits.clone(),
             cfg,
             host,
+            state,
         ))
     }
 }

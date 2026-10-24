@@ -25,11 +25,19 @@ impl Greeter for Echo {
 }
 
 fn handler() -> ManagementGrpcHandler {
+    handler_for(claviron::runtime::AppState::standalone(
+        "grpc-admission-test",
+        ".",
+    ))
+}
+
+fn handler_for(state: claviron::runtime::AppState) -> ManagementGrpcHandler {
     ManagementGrpcHandler::with_routes(
         tonic::service::Routes::new(GreeterServer::new(Echo)).prepare(),
         Arc::new(Semaphore::new(1)),
         &GrpcConfig::default(),
         "management.example.test".to_owned(),
+        state,
     )
 }
 
@@ -69,6 +77,15 @@ fn request(
             client_cert: Some(TlsClientCertInfo {
                 subject_dn: "CN=operator".to_owned(),
                 issuer_dn: "CN=example CA".to_owned(),
+                identity: Some(Arc::new(
+                    claviron::auth::access::PeerIdentity {
+                        certificate: Arc::from([]),
+                        subject_dn: "CN=operator".into(),
+                        issuer_dn: "CN=example CA".into(),
+                        common_names: vec!["operator".into()],
+                        subject_uris: vec!["urn:example:subject:one".into()],
+                    },
+                )),
             }),
         }),
     }));
@@ -106,4 +123,73 @@ async fn grpc_h3_requires_verified_mtls_and_http1_remains_rejected() {
     let response =
         handler().call(request(http::Version::HTTP_11, true)).await.unwrap();
     assert_eq!(response.headers()["grpc-status"], "9");
+}
+
+struct AccessCheck {
+    allow: std::sync::atomic::AtomicBool,
+    targets: std::sync::Mutex<Vec<AccessTarget>>,
+}
+#[async_trait::async_trait]
+impl claviron::auth::access::AccessPolicy for AccessCheck {
+    async fn authorize(
+        &self,
+        peer: &claviron::auth::access::PeerIdentity,
+        target: &AccessTarget,
+    ) -> Result<
+        Option<claviron::auth::AnyAuthenticated>,
+        claviron::auth::access::AccessError,
+    > {
+        self.targets.lock().unwrap().push(target.clone());
+        assert_eq!(peer.subject_uris, ["urn:example:subject:one"]);
+        if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(None)
+        } else {
+            Err(claviron::auth::access::AccessError::Forbidden)
+        }
+    }
+}
+#[tokio::test]
+async fn grpc_access_policy_runs_for_each_h2_h3_request_and_cannot_be_spoofed()
+{
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for version in [http::Version::HTTP_2, http::Version::HTTP_3] {
+        let state = AppState::standalone("grpc-access-test", ".");
+        let policy = Arc::new(AccessCheck {
+            allow: AtomicBool::new(true),
+            targets: std::sync::Mutex::new(vec![]),
+        });
+        state.registry_ref().insert(policy.clone()).unwrap();
+        state
+            .registry_ref()
+            .bind_dyn::<dyn claviron::auth::access::AccessPolicy, AccessCheck>(
+                |value| value,
+            )
+            .unwrap();
+        let handler = handler_for(state);
+        let response = handler.call(request(version, true)).await.unwrap();
+        assert!(!response.headers().contains_key("grpc-status"));
+        policy.allow.store(false, Ordering::SeqCst);
+        let mut denied = request(version, true);
+        denied
+            .headers_mut()
+            .insert("x-access-target", "allowed".parse().unwrap());
+        let response = handler.call(denied).await.unwrap();
+        assert_eq!(response.headers()["grpc-status"], "7");
+        assert_eq!(
+            policy.targets.lock().unwrap().as_slice(),
+            [
+                AccessTarget {
+                    service: "grpc".into(),
+                    operation: "/claviron.helloworld.Greeter/SayHello".into()
+                },
+                AccessTarget {
+                    service: "grpc".into(),
+                    operation: "/claviron.helloworld.Greeter/SayHello".into()
+                },
+            ]
+        );
+        let response = handler.call(request(version, false)).await.unwrap();
+        assert_eq!(response.headers()["grpc-status"], "16");
+        assert_eq!(policy.targets.lock().unwrap().len(), 2);
+    }
 }

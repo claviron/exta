@@ -61,6 +61,32 @@ Database-backed operations require the configured hosting store and schema.
 Protobuf generation uses `protoc` at build time, including protocol-only builds.
 The [proto directory](proto) contains the source contracts.
 
+## Service access policy
+
+All server builds can use `claviron::auth::access::{PeerIdentity, AccessTarget,
+AccessPolicy}` without selecting user or role management. Bind a host-owned
+policy with `registry.bind_dyn`. No `validate_user` switch or separate
+application model is installed. Without a policy, existing mTLS admission stays
+in effect. A registered policy is consulted on every call; errors never fall
+back to certificate-only admission.
+
+The accepting transport validates the certificate before providing its exact
+public leaf DER, structured CNs and URI SAN candidates in `PeerIdentity`.
+`AccessTarget` uses `service = "grpc"` and the actual fully qualified RPC path,
+not a header or a submitted scope. The same policy protects dedicated H2 and
+Edge H2/H3 calls, including reflection and capability discovery. Hosts grant
+those discovery operations explicitly when their policy requires it.
+
+`Ok(None)` grants peer-only access. `Ok(Some(actor))` also supplies the host's
+`AnyAuthenticated` subject to user-management handlers. These handlers require
+that actor and the matching operation admission; mTLS alone cannot synthesize a
+user. The policy owns lookup, active-state checks, role interpretation and
+binding to a stable application subject. CN-only credentials need no invented
+identifier, and multiple URI candidates are retained for explicit host selection.
+The issuer DN is display metadata, not a trust-anchor identity; the host owns
+trust-domain restrictions through its configured TLS trust and access policy.
+No permission claims are inferred from certificate names or URI contents.
+
 ## User-management protocol
 
 [users.proto](proto/users.proto) defines schema discovery, user/role/permission
@@ -73,9 +99,39 @@ The native contracts are `claviron::auth::users::UserManager` for user CRUD and
 `claviron::auth::authorization::AuthorizationManager` for role/permission CRUD
 and assignments. Their `users` and `authorization` features are independent.
 
-Generated protocol types and client stubs are available now. No user-management
-handler or route is installed by `server`; an application adapter and GUI are
-not part of this protocol-only surface.
+Enable `users` for user CRUD, `authorization` for role/permission CRUD and
+direct assignments, or both. Each enables `server` and its matching Claviron
+capability. One `UserManagement` service dispatches to the corresponding manager
+bound in the application registry. A missing manager or disabled resource returns
+`UNIMPLEMENTED`; `server` alone installs neither capability. Protocol types and
+client stubs remain available without these features.
+The base server's hosting services still require the host's choice of a
+Claviron database backend; these management features do not select one.
+
+Bind the application's existing `UserManager` and/or `AuthorizationManager`
+with `registry.bind_dyn`. User-management calls require an application actor
+returned by the host's `claviron::auth::access::AccessPolicy`.
+Managers recheck current authority, scope, validation and revisions on every call.
+
+Declare work bounds in `grpc.yaml`, for example:
+
+```yaml
+user_management:
+  max_page_size: 100
+  max_document_bytes: 16384
+  max_assignment_members: 256
+```
+
+These are explicit example values, not defaults. List, JSON mutation and
+assignment replacement calls require the applicable bounds before delegation.
+Reload updates these bounds without replacing the manager. Tonic's default
+inbound message-size bound also applies. JSON decoding preserves exact integer
+values and rejects non-object documents. No database or GUI is installed here.
+
+`GetAssignmentSchema` discovers pivot operations through `AuthorizationManager`
+independently of user CRUD schemas; its revision does not replace a user schema
+revision. `GetAssignments` and `ReplaceAssignments` use the same provider even
+when user CRUD is disabled.
 
 ### Schema contract
 

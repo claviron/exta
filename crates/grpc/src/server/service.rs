@@ -64,6 +64,10 @@ pub(crate) fn create_management_routes(
     #[cfg(feature = "acme")]
     let routes = routes.add_service(acme_service);
 
+    #[cfg(any(feature = "users", feature = "authorization"))]
+    let routes =
+        routes.add_service(super::users::create_service(state.clone()));
+
     #[cfg(feature = "tasks")]
     let routes = routes.add_service(task_service);
 
@@ -106,6 +110,10 @@ fn management_capabilities() -> Vec<String> {
         "linked_applications",
         "hosting",
         "reflection",
+        #[cfg(feature = "users")]
+        "users",
+        #[cfg(feature = "authorization")]
+        "authorization",
         #[cfg(feature = "tasks")]
         "tasks",
         #[cfg(feature = "workers")]

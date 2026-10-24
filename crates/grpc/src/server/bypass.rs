@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use claviron::auth::access::AccessTarget;
 use claviron::edge::BypassHandler;
 use claviron::http::ext::ConnCtx;
 use claviron::http::{RouteBody, RouteFuture, RouteResponse, boxed_body};
+use claviron::runtime::AppState;
 use http::{Request, Response};
 use http_body_util::BodyExt;
 use tokio::sync::Semaphore;
@@ -22,6 +24,7 @@ pub(crate) struct ManagementGrpcHandler {
     request_timeout: Duration,
     permits: Arc<Semaphore>,
     auth_guard: AuthGuard,
+    state: AppState,
 }
 
 impl ManagementGrpcHandler {
@@ -30,12 +33,14 @@ impl ManagementGrpcHandler {
         permits: Arc<Semaphore>,
         cfg: &GrpcConfig,
         host: String,
+        state: AppState,
     ) -> Self {
         Self {
             routes,
             request_timeout: cfg.request_timeout,
             permits,
             auth_guard: AuthGuard { host },
+            state,
         }
     }
 }
@@ -72,6 +77,10 @@ impl BypassHandler for ManagementGrpcHandler {
                 ) && tls.client_cert.is_some()
             });
         let conn_info = conn_ctx.map(|ctx| Arc::new(conn_info_from_ctx(ctx)));
+        let peer = conn_ctx
+            .and_then(|ctx| ctx.tls.as_ref())
+            .and_then(|tls| tls.client_cert.as_ref())
+            .and_then(|cert| cert.identity.clone());
         if let Some(status) =
             self.auth_guard.connection_status(client_cert_present)
         {
@@ -101,10 +110,16 @@ impl BypassHandler for ManagementGrpcHandler {
         }
 
         let routes = self.routes.clone();
+        let state = self.state.clone();
+        let admission_timeout = self.request_timeout;
+        let target = AccessTarget {
+            service: "grpc".into(),
+            operation: req.uri().path().to_owned(),
+        };
         let request_timeout =
             request_timeout_for(req.uri().path(), self.request_timeout);
         let permits = self.permits.clone();
-        let req = req.map(|body| {
+        let mut req = req.map(|body| {
             let body = body.map_err(|err| Status::internal(err.to_string()));
             tonic::body::Body::new(body)
         });
@@ -117,25 +132,43 @@ impl BypassHandler for ManagementGrpcHandler {
                 ));
             };
 
+            let serve = async {
+                let admission =
+                    super::access::admit(&state, peer.as_deref(), target);
+                // RunTask keeps its own execution budget, but authenticating its
+                // caller still uses the configured management request bound.
+                let admitted = if request_timeout.is_none() {
+                    tokio::time::timeout(admission_timeout, admission)
+                        .await
+                        .map_err(|_| {
+                            Status::deadline_exceeded(
+                                "gRPC admission timed out",
+                            )
+                        })?
+                } else {
+                    admission.await
+                }?;
+                req.extensions_mut().insert(admitted);
+                let response = routes
+                    .oneshot(req)
+                    .await
+                    .unwrap_or_else(|err| match err {});
+                Ok::<_, Status>(response)
+            };
             match request_timeout {
                 Some(request_timeout) => {
-                    match tokio::time::timeout(
-                        request_timeout,
-                        routes.oneshot(req),
-                    )
-                    .await
-                    {
+                    match tokio::time::timeout(request_timeout, serve).await {
                         Ok(Ok(resp)) => Ok(route_response(resp, version)),
-                        Ok(Err(err)) => match err {},
+                        Ok(Err(status)) => Ok(status_response(status, version)),
                         Err(_) => Ok(status_response(
                             Status::deadline_exceeded("gRPC request timed out"),
                             version,
                         )),
                     }
                 }
-                None => match routes.oneshot(req).await {
+                None => match serve.await {
                     Ok(resp) => Ok(route_response(resp, version)),
-                    Err(err) => match err {},
+                    Err(status) => Ok(status_response(status, version)),
                 },
             }
         })
@@ -196,18 +229,13 @@ fn conn_info_from_ctx(ctx: &ConnCtx) -> ConnInfo {
         .tls
         .as_ref()
         .and_then(|tls| tls.client_cert.as_ref())
-        .and_then(|cert| common_name_from_subject(&cert.subject_dn));
+        .and_then(|cert| cert.identity.as_ref())
+        .and_then(|identity| match identity.common_names.as_slice() {
+            [name] => Some(name.clone()),
+            _ => None,
+        });
 
     ConnInfo { addr: ctx.remote, certificates: Vec::new(), client_cn }
-}
-
-fn common_name_from_subject(subject: &str) -> Option<String> {
-    subject.split(',').find_map(|part| {
-        let part = part.trim();
-        part.strip_prefix("CN=")
-            .filter(|cn| !cn.is_empty())
-            .map(ToOwned::to_owned)
-    })
 }
 
 #[cfg(test)]

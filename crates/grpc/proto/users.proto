@@ -5,8 +5,7 @@ package claviron.users;
 import "google/protobuf/empty.proto";
 import "management.proto";
 
-// Protocol only: no handler, database, actor mapping, or route is installed.
-// A future adapter delegates to an application-provided UserManager. Operator
+// Optional handlers delegate to application-provided management capabilities. Operator
 // identity comes from trusted admission, never from these request messages.
 // Each call rechecks authorization and provider-owned management scope, including
 // direct references, mutations, and every related role/permission target.
@@ -17,6 +16,7 @@ service UserManagement {
   rpc CreateRecord(CreateRecordRequest) returns (RecordMutationResult);
   rpc UpdateRecord(UpdateRecordRequest) returns (RecordMutationResult);
   rpc DeleteRecord(DeleteRecordRequest) returns (google.protobuf.Empty);
+  rpc GetAssignmentSchema(GetAssignmentSchemaRequest) returns (AssignmentSchema);
   rpc GetAssignments(GetAssignmentsRequest) returns (Assignments);
   rpc ReplaceAssignments(ReplaceAssignmentsRequest) returns (AssignmentMutationResult);
 }
@@ -127,6 +127,17 @@ enum Relation {
   RELATION_USER_ROLES = 1;
   RELATION_USER_PERMISSIONS = 2;
   RELATION_ROLE_PERMISSIONS = 3;
+}
+
+// Relationship discovery is independent of user CRUD availability.
+message GetAssignmentSchemaRequest {
+  Relation relation = 1;
+}
+
+message AssignmentSchema {
+  Relation relation = 1;
+  string revision = 2;
+  repeated Operation operations = 3;
 }
 
 message AssignmentKey {
