@@ -69,10 +69,35 @@ fields and optional UI metadata use the shared
 [management.proto](proto/management.proto) envelope. Public references and
 revision tokens are opaque; no common users table or fixed profile fields are
 required. Validation and management scope belong to the downstream application.
+The native contract is `claviron::auth::users::UserManager`; gRPC is one adapter
+for this transport-independent API.
 
 Generated protocol types and client stubs are available now. No user-management
 handler or route is installed by `server`; an application adapter and GUI are
 not part of this protocol-only surface.
+
+### Schema contract
+
+Schemas come from the application's `UserManager`, with separate projections:
+
+- `record_schema_json` describes authorized output fields.
+- `create.data_schema_json` describes the complete creation object. Required
+  fields use `required`; accepted choices use `enum` or `const`. A default does
+  not satisfy a requirement for an explicitly submitted choice. Account types
+  and other domain fields are application-defined, not fixed gRPC fields.
+- `update.data_schema_json` describes editable values. Updates are sparse:
+  validate supplied fields and the resulting record without requiring unchanged
+  fields to be submitted again.
+
+Data schemas explicitly declare JSON Schema 2020-12 through `$schema`. The
+provider declares its unknown-field policy and enforces the same constraints
+when writing. Optional `ui_schema_json` uses JSON Forms UI Schema; its controls
+refer to data properties. Layout, visibility and read-only hints grant no write
+authority. Clients reject unsupported forms rather than silently dropping rules.
+
+Field, constraint, UI or operation changes require a new schema revision.
+Validation remains server-side and returns JSON-Pointer field violations through
+the mutation-result envelope. No schema is inferred from database columns.
 
 ## Vhost configuration
 
