@@ -441,6 +441,7 @@ async fn serve(
             })
         });
     let ctx = Arc::new(ConnCtx {
+        state: Default::default(),
         listener: ListenerId::try_from("grpc-dedicated".to_owned())
             .map_err(|error| error.to_string())?,
         proto: Some(Proto::H2),

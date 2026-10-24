@@ -19,7 +19,9 @@ impl claviron::auth::Authenticated for Actor {
 }
 struct Policy {
     targets: Mutex<Vec<AccessTarget>>,
+    result: Mutex<Option<PolicyResult>>,
 }
+type PolicyResult = Result<Option<AnyAuthenticated>, AccessError>;
 #[async_trait]
 impl AccessPolicy for Policy {
     async fn authorize(
@@ -29,14 +31,8 @@ impl AccessPolicy for Policy {
     ) -> Result<Option<AnyAuthenticated>, AccessError> {
         self.targets.lock().unwrap().push(target.clone());
         assert_eq!(peer.common_names, ["operator"]);
-        match target.operation.as_str() {
-            "peer-only" => Ok(None),
-            "bind" => Ok(Some(Arc::new(Actor))),
-            "unauthenticated" => Err(AccessError::Unauthenticated),
-            "unavailable" => Err(AccessError::Unavailable),
-            "unsupported" => Err(AccessError::Unsupported),
-            _ => Err(AccessError::Forbidden),
-        }
+        assert_eq!(target.operation, "connect");
+        self.result.lock().unwrap().take().expect("one admission per session")
     }
 }
 fn target(operation: &str) -> AccessTarget {
@@ -51,8 +47,14 @@ fn peer() -> PeerIdentity {
         subject_uris: vec![],
     }
 }
-fn bind(state: &AppState) -> Arc<Policy> {
-    let policy = Arc::new(Policy { targets: Mutex::new(vec![]) });
+fn bind(
+    state: &AppState,
+    result: Result<Option<AnyAuthenticated>, AccessError>,
+) -> Arc<Policy> {
+    let policy = Arc::new(Policy {
+        targets: Mutex::new(vec![]),
+        result: Mutex::new(Some(result)),
+    });
     state.registry_ref().insert(policy.clone()).unwrap();
     state
         .registry_ref()
@@ -60,50 +62,71 @@ fn bind(state: &AppState) -> Arc<Policy> {
         .unwrap();
     policy
 }
+fn session(
+    state: AppState,
+    peer: Option<Arc<PeerIdentity>>,
+) -> Session {
+    Session::new(
+        state,
+        peer,
+        super::super::config::GrpcConfig::default().request_timeout,
+    )
+}
 #[tokio::test]
 async fn access_no_policy_preserves_peer_only_admission_without_a_user_model() {
     let state = AppState::standalone("access-test", ".");
-    let admission = admit(&state, None, target("peer-only")).await.unwrap();
+    let session = session(state, None);
+    let admission = session.admit(target("inspect")).await.unwrap();
     assert!(admission.actor.is_none());
 }
 #[tokio::test]
-async fn access_policy_binding_and_denials_are_target_specific_and_not_cached()
-{
+async fn access_session_shares_one_actor_across_concurrent_operations() {
     let state = AppState::standalone("access-test", ".");
-    let policy = bind(&state);
-    let peer = peer();
-    assert!(
-        admit(&state, Some(&peer), target("peer-only"))
-            .await
-            .unwrap()
-            .actor
-            .is_none()
+    let policy = bind(&state, Ok(Some(Arc::new(Actor))));
+    let session = session(state, Some(Arc::new(peer())));
+    let (first, second) = tokio::join!(
+        session.admit(target("inspect")),
+        session.admit(target("update")),
     );
-    assert_eq!(
-        admit(&state, Some(&peer), target("bind"))
-            .await
-            .unwrap()
-            .actor
-            .unwrap()
-            .auth_subject(),
-        "bound-subject"
-    );
-    for (operation, code) in [
-        ("forbidden", Code::PermissionDenied),
-        ("unauthenticated", Code::Unauthenticated),
-        ("unavailable", Code::Unavailable),
-        ("unsupported", Code::Unimplemented),
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.target.operation, "inspect");
+    assert_eq!(second.target.operation, "update");
+    assert!(Arc::ptr_eq(
+        first.actor.as_ref().unwrap(),
+        second.actor.as_ref().unwrap()
+    ));
+    assert_eq!(first.actor.unwrap().auth_subject(), "bound-subject");
+    assert_eq!(policy.targets.lock().unwrap().as_slice(), [target("connect")]);
+}
+#[tokio::test]
+async fn access_session_retains_denials_without_rechecking_or_falling_back() {
+    for (error, code) in [
+        (AccessError::Forbidden, Code::PermissionDenied),
+        (AccessError::Unauthenticated, Code::Unauthenticated),
+        (AccessError::Unavailable, Code::Unavailable),
+        (AccessError::Unsupported, Code::Unimplemented),
     ] {
-        let Err(status) = admit(&state, Some(&peer), target(operation)).await
-        else {
-            panic!("policy error must not fall back")
-        };
-        assert_eq!(status.code(), code);
+        let state = AppState::standalone("access-test", ".");
+        let policy = bind(&state, Err(error));
+        let session = session(state, Some(Arc::new(peer())));
+        for operation in ["inspect", "update"] {
+            let Err(status) = session.admit(target(operation)).await else {
+                panic!("policy error must not fall back")
+            };
+            assert_eq!(status.code(), code);
+        }
+        assert_eq!(policy.targets.lock().unwrap().len(), 1);
     }
-    assert_eq!(policy.targets.lock().unwrap().len(), 6);
-    let Err(status) = admit(&state, None, target("bind")).await else {
+}
+#[tokio::test]
+async fn access_session_requires_peer_facts_when_policy_is_registered() {
+    let state = AppState::standalone("access-test", ".");
+    let policy = bind(&state, Ok(None));
+    let session = session(state, None);
+    let Err(status) = session.admit(target("inspect")).await else {
         panic!("missing identity must fail")
     };
     assert_eq!(status.code(), Code::Unauthenticated);
-    assert_eq!(policy.targets.lock().unwrap().len(), 6);
+    assert!(policy.targets.lock().unwrap().is_empty());
 }

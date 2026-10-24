@@ -59,6 +59,7 @@ fn request(
         .header("content-type", "application/grpc").header("te", "trailers")
         .body(claviron::http::bytes_body(frame.into())).unwrap();
     request.extensions_mut().insert(Arc::new(ConnCtx {
+        state: Default::default(),
         listener: "management".parse().unwrap(),
         proto: Some(proto),
         remote: "192.0.2.1:12345".parse().unwrap(),
@@ -149,8 +150,8 @@ impl claviron::auth::access::AccessPolicy for AccessCheck {
     }
 }
 #[tokio::test]
-async fn grpc_access_policy_runs_for_each_h2_h3_request_and_cannot_be_spoofed()
-{
+async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnect()
+ {
     use std::sync::atomic::{AtomicBool, Ordering};
     for version in [http::Version::HTTP_2, http::Version::HTTP_3] {
         let state = AppState::standalone("grpc-access-test", ".");
@@ -166,25 +167,41 @@ async fn grpc_access_policy_runs_for_each_h2_h3_request_and_cannot_be_spoofed()
             )
             .unwrap();
         let handler = handler_for(state);
-        let response = handler.call(request(version, true)).await.unwrap();
+        let first = request(version, true);
+        let connection =
+            first.extensions().get::<Arc<ConnCtx>>().unwrap().clone();
+        let response = handler.call(first).await.unwrap();
         assert!(!response.headers().contains_key("grpc-status"));
         policy.allow.store(false, Ordering::SeqCst);
-        let mut denied = request(version, true);
-        denied
+        let mut same_connection = request(version, true);
+        same_connection.extensions_mut().insert(connection);
+        let response = handler.call(same_connection).await.unwrap();
+        assert!(!response.headers().contains_key("grpc-status"));
+        assert_eq!(policy.targets.lock().unwrap().len(), 1);
+
+        let denied = request(version, true);
+        let denied_connection =
+            denied.extensions().get::<Arc<ConnCtx>>().unwrap().clone();
+        let response = handler.call(denied).await.unwrap();
+        assert_eq!(response.headers()["grpc-status"], "7");
+        policy.allow.store(true, Ordering::SeqCst);
+        let mut still_denied = request(version, true);
+        still_denied.extensions_mut().insert(denied_connection);
+        still_denied
             .headers_mut()
             .insert("x-access-target", "allowed".parse().unwrap());
-        let response = handler.call(denied).await.unwrap();
+        let response = handler.call(still_denied).await.unwrap();
         assert_eq!(response.headers()["grpc-status"], "7");
         assert_eq!(
             policy.targets.lock().unwrap().as_slice(),
             [
                 AccessTarget {
                     service: "grpc".into(),
-                    operation: "/claviron.helloworld.Greeter/SayHello".into()
+                    operation: "connect".into()
                 },
                 AccessTarget {
                     service: "grpc".into(),
-                    operation: "/claviron.helloworld.Greeter/SayHello".into()
+                    operation: "connect".into()
                 },
             ]
         );

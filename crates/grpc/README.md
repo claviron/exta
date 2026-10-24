@@ -67,22 +67,30 @@ All server builds can use `claviron::auth::access::{PeerIdentity, AccessTarget,
 AccessPolicy}` without selecting user or role management. Bind a host-owned
 policy with `registry.bind_dyn`. No `validate_user` switch or separate
 application model is installed. Without a policy, existing mTLS admission stays
-in effect. A registered policy is consulted on every call; errors never fall
-back to certificate-only admission.
+in effect. A registered policy is consulted once when the first management RPC
+establishes the connection's session. Its actor or denial is retained until
+disconnect; errors never fall back to certificate-only admission.
+
+Each rejected connection emits one ERROR event with the service and safe
+admission reason. Repeated RPCs on that connection return the retained denial
+without another lookup or log. Reconnecting performs a new admission.
 
 The accepting transport validates the certificate before providing its exact
 public leaf DER, structured CNs and URI SAN candidates in `PeerIdentity`.
-`AccessTarget` uses `service = "grpc"` and the actual fully qualified RPC path,
-not a header or a submitted scope. The same policy protects dedicated H2 and
-Edge H2/H3 calls, including reflection and capability discovery. Hosts grant
-those discovery operations explicitly when their policy requires it.
+`AccessTarget` uses `service = "grpc"` and `operation = "connect"`, never a
+header or a submitted scope. Dedicated H2 and Edge H2/H3 use the same session
+admission, including reflection and capability discovery. Concurrent RPCs share
+the same pending decision. Cancelling one RPC does not restart validation.
 
 `Ok(None)` grants peer-only access. `Ok(Some(actor))` also supplies the host's
 `AnyAuthenticated` subject to user-management handlers. These handlers require
 that actor and the matching operation admission; mTLS alone cannot synthesize a
 user. The policy owns lookup, active-state checks, role interpretation and
-binding to a stable application subject. CN-only credentials need no invented
-identifier, and multiple URI candidates are retained for explicit host selection.
+binding to a stable application subject at session establishment. Managers still
+enforce current resource permissions per operation; session admission is not a
+blanket RPC grant. Changes to service admission take effect on reconnect.
+CN-only credentials need no invented identifier, and multiple URI candidates
+are retained for explicit host selection.
 The issuer DN is display metadata, not a trust-anchor identity; the host owns
 trust-domain restrictions through its configured TLS trust and access policy.
 No permission claims are inferred from certificate names or URI contents.

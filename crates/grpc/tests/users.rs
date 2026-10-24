@@ -855,10 +855,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
             self.0.fetch_add(1, Ordering::SeqCst);
             assert_eq!(peer.common_names, ["operator"]);
             assert_eq!(target.service, "grpc");
-            assert_eq!(
-                target.operation,
-                "/claviron.users.UserManagement/GetSchema"
-            );
+            assert_eq!(target.operation, "connect");
             Ok(Some(Arc::new(Actor("policy-subject"))))
         }
     }
@@ -896,6 +893,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
         .body(claviron::http::bytes_body(frame.into()))
         .unwrap();
     request.extensions_mut().insert(Arc::new(ConnCtx {
+        state: Default::default(),
         listener: "management".parse().unwrap(),
         proto: Some(claviron::tls::Proto::H2),
         remote: "192.0.2.1:12345".parse().unwrap(),

@@ -89,6 +89,17 @@ impl BypassHandler for ManagementGrpcHandler {
             );
         }
 
+        let session = conn_ctx
+            .expect("verified client certificate requires connection context")
+            .state
+            .get_or_insert_with(|| {
+                super::access::Session::new(
+                    self.state.clone(),
+                    peer,
+                    self.request_timeout,
+                )
+            });
+
         if let Some(conn_info) = conn_info {
             req.extensions_mut().insert(conn_info);
         }
@@ -110,8 +121,6 @@ impl BypassHandler for ManagementGrpcHandler {
         }
 
         let routes = self.routes.clone();
-        let state = self.state.clone();
-        let admission_timeout = self.request_timeout;
         let target = AccessTarget {
             service: "grpc".into(),
             operation: req.uri().path().to_owned(),
@@ -133,21 +142,7 @@ impl BypassHandler for ManagementGrpcHandler {
             };
 
             let serve = async {
-                let admission =
-                    super::access::admit(&state, peer.as_deref(), target);
-                // RunTask keeps its own execution budget, but authenticating its
-                // caller still uses the configured management request bound.
-                let admitted = if request_timeout.is_none() {
-                    tokio::time::timeout(admission_timeout, admission)
-                        .await
-                        .map_err(|_| {
-                            Status::deadline_exceeded(
-                                "gRPC admission timed out",
-                            )
-                        })?
-                } else {
-                    admission.await
-                }?;
+                let admitted = session.admit(target).await?;
                 req.extensions_mut().insert(admitted);
                 let response = routes
                     .oneshot(req)
