@@ -1,4 +1,4 @@
-//! Database-backed local CA issuance for management and application callers.
+//! Database-backed local CA issuance and revocation for management and applications.
 //!
 //! Callers authorize operations before invoking this manager. It performs no
 //! authentication and creates no HTTP routes. It uses the crate's protobuf DTOs
@@ -19,10 +19,10 @@ use tonic::Status;
 
 use crate::proto::mtls::{
     CertificateInfo, CreateCertificateRequest, CreateRootCaRequest,
-    RenewCertificateRequest,
+    RenewCertificateRequest, RevokeCertificateRequest,
 };
 
-/// Root CA creation and local-CA signing over the managed hosting store.
+/// Root CA creation, local-CA signing and leaf revocation over the hosting store.
 ///
 /// Application handlers must enforce their own enrollment/authorization policy.
 /// The manager never derives permission from a request's chosen CN or issuer.
@@ -33,6 +33,59 @@ pub struct MtlsManager {
 }
 
 impl MtlsManager {
+    /// Permanently revoke a local certificate, retaining its first timestamp.
+    /// Store notifications refresh TLS snapshots after the committed mutation.
+    pub async fn revoke_certificate(
+        &self,
+        request: RevokeCertificateRequest,
+    ) -> Result<CertificateInfo, Status> {
+        let name = request
+            .common_name
+            .parse::<claviron::ssl::CommonName>()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let hosted = self
+            .store
+            .certificate_by_cn(name.as_str())
+            .await
+            .map_err(storage_status)?
+            .ok_or_else(|| Status::not_found("certificate not found"))?;
+        if hosted.certificate.kind == CertificateKind::Ca {
+            return Err(Status::failed_precondition(
+                "CA revocation requires a separate trust-chain policy; select a client or server certificate",
+            ));
+        }
+        if let Some(id) = hosted.certificate.issuer_id {
+            let issuer = self
+                .store
+                .issuer_by_id(id)
+                .await
+                .map_err(storage_status)?
+                .ok_or_else(|| {
+                    Status::failed_precondition("certificate issuer not found")
+                })?;
+            if issuer.kind != claviron::hosting::IssuerKind::LocalCa {
+                return Err(Status::failed_precondition(
+                    "ACME certificates require revocation by their ACME authority",
+                ));
+            }
+        }
+        self.store
+            .revoke_certificate(
+                hosted.certificate.id,
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(storage_status)?;
+        let saved = self
+            .store
+            .certificate_by_cn(name.as_str())
+            .await
+            .map_err(storage_status)?
+            .ok_or_else(|| {
+                Status::not_found("certificate not found after revocation")
+            })?;
+        Ok(metadata(saved))
+    }
     /// Renew the original identity using its persisted key and signer.
     pub async fn renew_certificate(
         &self,
@@ -49,6 +102,11 @@ impl MtlsManager {
             .map_err(storage_status)?
             .ok_or_else(|| Status::not_found("certificate not found"))?;
         let original = hosted.certificate;
+        if original.revoked_at.is_some() {
+            return Err(Status::failed_precondition(
+                "revoked certificates cannot be renewed",
+            ));
+        }
         if !original.enabled {
             return Err(Status::failed_precondition(
                 "disabled certificates cannot be renewed",
@@ -500,6 +558,10 @@ fn metadata(saved: HostedCertificate) -> CertificateInfo {
             nanos: 0,
         }),
         enabled: cert.enabled,
+        revoked_at: cert.revoked_at.map(|date| prost_types::Timestamp {
+            seconds: date.unix_timestamp(),
+            nanos: 0,
+        }),
     }
 }
 

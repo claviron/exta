@@ -1,4 +1,4 @@
-//! gRPC adapter for the local CA issuance manager.
+//! gRPC adapter for local CA issuance and certificate revocation.
 use claviron::runtime::AppState;
 use tonic::{Request, Response, Status};
 
@@ -6,7 +6,7 @@ use crate::mtls_manager::MtlsManager as IssuanceManager;
 use crate::proto::mtls::mtls_manager_server::{MtlsManager, MtlsManagerServer};
 use crate::proto::mtls::{
     CertificateInfo, CreateCertificateRequest, CreateRootCaRequest,
-    RenewCertificateRequest,
+    RenewCertificateRequest, RevokeCertificateRequest,
 };
 
 pub(crate) struct MtlsService {
@@ -20,6 +20,15 @@ pub(crate) fn create_mtls_service(
 
 #[tonic::async_trait]
 impl MtlsManager for MtlsService {
+    async fn revoke_certificate(
+        &self,
+        request: Request<RevokeCertificateRequest>,
+    ) -> Result<Response<CertificateInfo>, Status> {
+        IssuanceManager::from_state(&self.state)?
+            .revoke_certificate(request.into_inner())
+            .await
+            .map(Response::new)
+    }
     async fn renew_certificate(
         &self,
         request: Request<RenewCertificateRequest>,

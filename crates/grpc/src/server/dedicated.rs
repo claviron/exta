@@ -25,8 +25,9 @@ use claviron::runtime::{AppState, RunContext, RunMode, ServiceStartPolicy};
 use claviron::sys::net::{
     AcceptErrorClass, PortSharing, classify_accept_error, create_tcp_listener,
 };
-use claviron::tls::auth::create_tcp_auth_config;
+use claviron::tls::auth::create_auth_config_with_revocations;
 use claviron::tls::auth::verifier::PolicyConfig;
+use claviron::tls::revocation::Revocations;
 use claviron::tls::{CertResolver, CertResolverProvider, Proto};
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
@@ -94,6 +95,7 @@ impl Component<AppState> for GrpcListener {
         Arc<GrpcServiceProvider>,
         Option<Arc<CertResolver>>,
         Option<Arc<VhostResolver>>,
+        Option<Arc<Revocations>>,
     );
 
     fn name(&self) -> &'static str {
@@ -139,7 +141,7 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps> for GrpcListener {
 
     async fn run(
         self: Arc<Self>,
-        (service, certs, vhosts): <Self as Component<AppState>>::Deps,
+        (service, certs, vhosts, revocations): <Self as Component<AppState>>::Deps,
         state: AppState,
         context: RunContext,
     ) -> Result<()> {
@@ -152,6 +154,9 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps> for GrpcListener {
         let shared = certs.ok_or_else(|| {
             Error::msg("gRPC certificate resolver is not registered")
         })?;
+        let revocations = revocations.ok_or_else(|| {
+            Error::msg("gRPC certificate revocations are not registered")
+        })?;
         let names = vhosts
             .ok_or_else(|| {
                 Error::msg("gRPC TLS hostname policy is not registered")
@@ -162,7 +167,7 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps> for GrpcListener {
         // may be file-backed. No request performs this work or resolves a vhost.
         let tls_configs = Arc::new(
             tokio::task::spawn_blocking(move || {
-                prepare_tls(&tls_policy, shared, &names)
+                prepare_tls(&tls_policy, shared, &names, revocations)
             })
             .await
             .map_err(|error| {
@@ -313,6 +318,7 @@ fn prepare_tls(
     policy: &ListenerConfig,
     certs: Arc<CertResolver>,
     names: &VhostTable,
+    revocations: Arc<Revocations>,
 ) -> Result<HashMap<String, Arc<ServerConfig>>> {
     let mut by_name = HashMap::new();
     let mut by_key: HashMap<Host, Arc<ServerConfig>> = HashMap::new();
@@ -352,11 +358,12 @@ fn prepare_tls(
                 }
             };
             let config = Arc::new(
-                create_tcp_auth_config(
+                create_auth_config_with_revocations(
                     ca,
                     certs.clone(),
                     vec![b"h2".to_vec()],
                     subject.as_ref(),
+                    revocations.clone(),
                 )
                 .map_err(|error| {
                     Error::msg(format!(

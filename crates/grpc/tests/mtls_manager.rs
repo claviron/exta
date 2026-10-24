@@ -179,6 +179,56 @@ async fn ca_server_and_client_material_stays_in_database() {
     assert_eq!(store.acme_certificates(true, None).await.unwrap().len(), 0);
     let other = store.ensure_acme_issuer(1).await.unwrap();
     assert!(CertAuthority::from_issuer(&store, &other.name).await.is_err());
+    let revoke =
+        || RevokeCertificateRequest { common_name: "client.test".into() };
+    let revoked = manager.revoke_certificate(revoke()).await.unwrap();
+    assert!(revoked.enabled);
+    assert!(revoked.revoked_at.is_some());
+    assert_eq!(
+        manager.revoke_certificate(revoke()).await.unwrap().revoked_at,
+        revoked.revoked_at
+    );
+    store.set_certificate_enabled("client.test", true).await.unwrap();
+    assert_eq!(
+        store
+            .certificate_by_id(revoked.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked_at
+            .unwrap()
+            .unix_timestamp(),
+        revoked.revoked_at.unwrap().seconds
+    );
+    assert_eq!(
+        manager
+            .renew_certificate(RenewCertificateRequest {
+                common_name: "client.test".into(),
+                validity_days: 2
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    assert_eq!(
+        store
+            .revoked_certificate_chains(OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        manager
+            .revoke_certificate(RevokeCertificateRequest {
+                common_name: "missing.test".into()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::NotFound
+    );
     store.set_certificate_enabled("root.test", false).await.unwrap();
     assert!(CertAuthority::from_issuer(&store, "root.test").await.is_err());
     assert!(authority.validate_issuer(&store).await.is_err());

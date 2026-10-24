@@ -69,6 +69,8 @@ message CertificateResponse {
   string fullchain_pem = 8;
   // Persisted usage role, also present in inventory/list responses.
   CertificateKind kind = 9;
+  // Revocation is permanent and independent of the enabled flag.
+  google.protobuf.Timestamp revoked_at = 10;
 }
 
 enum CertificateKind {

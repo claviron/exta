@@ -3,12 +3,19 @@ package claviron.mtls;
 
 import "google/protobuf/timestamp.proto";
 
-// Local-CA issuance, independent of ACME. Material is stored in the hosting
+// Local-CA issuance and revocation, independent of ACME. Material stays in hosting
 // database only; clients extract it separately when needed.
 service MtlsManager {
   rpc CreateRootCa(CreateRootCaRequest) returns (CertificateInfo);
   rpc CreateCertificate(CreateCertificateRequest) returns (CertificateInfo);
   rpc RenewCertificate(RenewCertificateRequest) returns (CertificateInfo);
+  // Permanently revoke a locally issued client/server certificate in hosting.
+  // Repeated calls preserve the first revocation time. Existing sessions remain open.
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (CertificateInfo);
+}
+
+message RevokeCertificateRequest {
+  string common_name = 1;
 }
 
 // Retain the stored key, encoded subject and every extension. Select the
@@ -53,6 +60,7 @@ message CertificateInfo {
   optional int32 issuer_id = 8;
   // URI SAN identities read from the actual signed certificate.
   repeated string subject_uris = 9;
+  google.protobuf.Timestamp revoked_at = 10;
   // Intentionally no certificate, private key, bundle or filesystem path.
 }
 

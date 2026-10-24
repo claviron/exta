@@ -220,6 +220,12 @@ certificates, trust, and required client authentication. It declares no separate
 certificate or CA-file configuration. Listener-local ACL checks use the real
 accepted peer, not forwarded headers.
 
+Dedicated TLS uses Claviron's shared revocation snapshot, combining CRL and
+configured database entries by issuer and serial number. Snapshot updates apply
+to new handshakes without restarting the listener or reading storage per
+connection. TLS session resumption is disabled so new connections cannot bypass
+the current snapshot; existing connections remain open.
+
 All declared binds share the listener connection cap. Conflicts with configured
 web TCP listeners are rejected. Listener topology and TLS-policy changes require
 a new listener generation; data/config reload is not an implicit socket rebind.
@@ -240,6 +246,14 @@ its own identity, ownership, and private-key export permissions.
 
 `CertAuthority` supplies public trust only. Local issuance explicitly acquires
 a `CertSigner` for the selected authority; reading trust does not load its CA key.
+
+`MtlsManager.RevokeCertificate` permanently revokes a local client/server
+certificate by its stored common name. It writes `revoked_at` through
+`HostingStore`, retaining the first timestamp and publishing the normal
+certificate-change notification. Responses and inventory include that timestamp
+independently of `enabled`. Re-enabling or renewing cannot undo revocation.
+Existing connections stay open; the shared TLS snapshot applies the committed
+change to new handshakes. ACME and CA-chain revocation are separate operations.
 
 Local issuance, certificate import/export, and ACME issuance are separate
 operations. Import does not silently issue a replacement certificate or alter

@@ -455,6 +455,7 @@ fn certificate_response(
         expires_at: Some(to_proto_ts(certificate.expires_at)),
         enabled: certificate.enabled,
         updated_at: certificate.updated_at.map(to_proto_ts),
+        revoked_at: certificate.revoked_at.map(to_proto_ts),
         fullchain_pem: String::new(),
         kind: match certificate.kind {
             claviron::hosting::CertificateKind::Server => {
@@ -564,6 +565,7 @@ mod tests {
                     expires_at,
                     issued_at,
                     updated_at: Some(updated_at),
+                    revoked_at: Some(updated_at),
                     enabled: false,
                 },
                 aliases: vec![CertificateAlias {
@@ -590,6 +592,10 @@ mod tests {
         );
         assert_eq!(certificate.aliases, ["www.example.test"]);
         assert!(!certificate.enabled);
+        assert_eq!(
+            certificate.revoked_at.map(|value| value.seconds),
+            Some(3_600)
+        );
         assert_eq!(certificate.issued_at.map(|value| value.seconds), Some(0));
         assert_eq!(
             certificate.updated_at.map(|value| value.seconds),
