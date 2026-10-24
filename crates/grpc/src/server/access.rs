@@ -75,7 +75,7 @@ impl Session {
                     operation = %target.operation,
                     client_cn,
                     code = ?tonic::Code::Ok,
-                    "gRPC access policy accepted a TLS-authenticated peer"
+                    "✅ gRPC access policy accepted a TLS-authenticated peer"
                 );
                 Ok(actor)
             })

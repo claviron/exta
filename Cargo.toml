@@ -77,4 +77,4 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # ── Claviron facade ──────────────────────────────────────────────────
-claviron = { version = "0.2.0-alpha.20", default-features = false }
+claviron = { path = "../claviron", default-features = false }
