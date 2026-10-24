@@ -1,5 +1,6 @@
 use super::*;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tonic::Code;
 
 #[test]
@@ -75,10 +76,7 @@ fn admitted<T>(value: T) -> Request<T> {
         .strip_suffix("Request")
         .unwrap();
     request.extensions_mut().insert(super::super::access::Admission {
-        target: claviron::auth::access::AccessTarget {
-            service: "grpc".into(),
-            operation: format!("/claviron.users.UserManagement/{operation}"),
-        },
+        operation: format!("/claviron.users.UserManagement/{operation}"),
         actor: Some(Arc::new(Actor("operator"))),
     });
     request
@@ -238,7 +236,7 @@ impl_manager!(Users, claviron::auth::users::UserManager,);
 #[cfg(feature = "authorization")]
 impl_manager!(
     Catalog,
-    domain::AuthorizationManager,
+    domain::RolePermissionManager,
     async fn assignment_schema(
         &self,
         actor: &dyn Authenticated,
@@ -429,7 +427,7 @@ fn bind_catalog(service: &Service) -> Arc<Catalog> {
     service
         .state
         .registry_ref()
-        .bind_dyn::<dyn domain::AuthorizationManager, Catalog>(|value| value)
+        .bind_dyn::<dyn domain::RolePermissionManager, Catalog>(|value| value)
         .unwrap();
     manager
 }
@@ -634,7 +632,6 @@ async fn management_admission_cannot_be_reused_for_another_operation() {
         .extensions_mut()
         .get_mut::<super::super::access::Admission>()
         .unwrap()
-        .target
         .operation = "/example.Admin/Inspect".into();
     assert_eq!(
         service.get_schema(request).await.unwrap_err().code(),
@@ -812,10 +809,7 @@ async fn management_single_tonic_service_routes_both_capabilities() {
             ))))
             .unwrap();
         request.extensions_mut().insert(super::super::access::Admission {
-            target: claviron::auth::access::AccessTarget {
-                service: "grpc".into(),
-                operation: "/claviron.users.UserManagement/GetSchema".into(),
-            },
+            operation: "/claviron.users.UserManagement/GetSchema".into(),
             actor: Some(Arc::new(Actor("operator"))),
         });
         let response = routes.clone().oneshot(request).await.unwrap();
@@ -833,29 +827,25 @@ async fn management_single_tonic_service_routes_both_capabilities() {
 #[cfg(feature = "users")]
 #[tokio::test]
 async fn management_gateway_supplies_the_policy_bound_actor_once() {
-    use claviron::auth::access::{
-        AccessError, AccessPolicy, AccessTarget, PeerIdentity,
-    };
+    use crate::access::{AccessError, GrpcAccessPolicy};
     use claviron::edge::BypassHandler;
     use claviron::http::ext::{
         ClientAuthStatus, ConnCtx, TlsClientCertInfo, TlsInfo,
     };
+    use claviron::ssl::peer::PeerIdentity;
     use http_body_util::BodyExt;
     use prost::Message;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Binding(AtomicUsize);
     #[async_trait]
-    impl AccessPolicy for Binding {
+    impl GrpcAccessPolicy for Binding {
         async fn authorize(
             &self,
             peer: &PeerIdentity,
-            target: &AccessTarget,
         ) -> Result<Option<AnyAuthenticated>, AccessError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             assert_eq!(peer.common_names, ["operator"]);
-            assert_eq!(target.service, "grpc");
-            assert_eq!(target.operation, "connect");
             Ok(Some(Arc::new(Actor("policy-subject"))))
         }
     }
@@ -866,7 +856,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
     service
         .state
         .registry_ref()
-        .bind_dyn::<dyn AccessPolicy, Binding>(|value| value)
+        .bind_dyn::<dyn GrpcAccessPolicy, Binding>(|value| value)
         .unwrap();
     let routes =
         tonic::service::Routes::new(create_service(service.state.clone()))

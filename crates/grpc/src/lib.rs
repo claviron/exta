@@ -1,3 +1,9 @@
+#[cfg(feature = "server")]
+pub mod access;
+
+#[cfg(feature = "server")]
+pub mod permission;
+
 #[cfg(feature = "mtls-manager")]
 pub mod mtls_manager;
 

@@ -2,7 +2,7 @@ use super::{domain, wire};
 use crate::proto::management;
 use tonic::Status;
 
-pub(super) fn required(
+pub(in crate::server) fn required(
     value: String,
     name: &str,
 ) -> Result<String, Status> {
@@ -14,7 +14,9 @@ pub(super) fn required(
     Ok(value)
 }
 
-pub(super) fn resource(value: i32) -> Result<domain::Resource, Status> {
+pub(in crate::server) fn resource(
+    value: i32
+) -> Result<domain::Resource, Status> {
     match wire::Resource::try_from(value) {
         #[cfg(feature = "users")]
         Ok(wire::Resource::User) => Ok(domain::Resource::User),
@@ -43,7 +45,7 @@ fn resource_out(value: domain::Resource) -> Result<i32, Status> {
     }
 }
 
-pub(super) fn key(
+pub(in crate::server) fn key(
     value: Option<wire::RecordKey>
 ) -> Result<domain::RecordKey, Status> {
     let value =
@@ -54,13 +56,15 @@ pub(super) fn key(
     })
 }
 
-pub(super) fn document(value: &[u8]) -> Result<domain::Document, Status> {
+pub(in crate::server) fn document(
+    value: &[u8]
+) -> Result<domain::Document, Status> {
     serde_json::from_slice(value).map_err(|_| {
         Status::invalid_argument("document must be a UTF-8 JSON object")
     })
 }
 
-pub(super) fn bounded_document(
+pub(in crate::server) fn bounded_document(
     value: &[u8],
     limits: super::Limits,
 ) -> Result<domain::Document, Status> {
@@ -77,7 +81,7 @@ fn json(value: &domain::Document) -> Result<Vec<u8>, Status> {
         .map_err(|_| Status::internal("invalid provider document"))
 }
 
-pub(super) fn record(
+pub(in crate::server) fn record(
     value: domain::Record
 ) -> Result<wire::ManagedRecord, Status> {
     if value.key.reference.is_empty() || value.revision.is_empty() {
@@ -100,7 +104,7 @@ fn form(value: domain::Form) -> Result<management::Form, Status> {
     })
 }
 
-pub(super) fn operations(
+pub(in crate::server) fn operations(
     values: Vec<domain::Operation>
 ) -> Result<Vec<i32>, Status> {
     values
@@ -132,7 +136,7 @@ pub(super) fn operations(
         .collect()
 }
 
-pub(super) fn schema(
+pub(in crate::server) fn schema(
     value: domain::Schema
 ) -> Result<wire::ManagementSchema, Status> {
     if value.revision.is_empty() {
@@ -150,7 +154,7 @@ pub(super) fn schema(
     })
 }
 
-pub(super) fn status(error: domain::ManagementError) -> Status {
+pub(in crate::server) fn status(error: domain::ManagementError) -> Status {
     use domain::ManagementError as E;
     let message = error.to_string();
     match error {
@@ -184,7 +188,7 @@ fn validation(
     })
 }
 
-pub(super) fn mutation(
+pub(in crate::server) fn mutation(
     value: domain::Result<domain::Record>
 ) -> Result<wire::RecordMutationResult, Status> {
     use wire::record_mutation_result::Outcome;
@@ -199,7 +203,9 @@ pub(super) fn mutation(
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn relation(value: i32) -> Result<domain::Relation, Status> {
+pub(in crate::server) fn relation(
+    value: i32
+) -> Result<domain::Relation, Status> {
     match wire::Relation::try_from(value) {
         Ok(wire::Relation::UserRoles) => Ok(domain::Relation::UserRoles),
         Ok(wire::Relation::UserPermissions) => {
@@ -213,7 +219,7 @@ pub(super) fn relation(value: i32) -> Result<domain::Relation, Status> {
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn relation_out(value: domain::Relation) -> i32 {
+pub(in crate::server) fn relation_out(value: domain::Relation) -> i32 {
     match value {
         domain::Relation::UserRoles => wire::Relation::UserRoles,
         domain::Relation::UserPermissions => wire::Relation::UserPermissions,
@@ -223,7 +229,7 @@ pub(super) fn relation_out(value: domain::Relation) -> i32 {
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn assignment_key(
+pub(in crate::server) fn assignment_key(
     value: Option<wire::AssignmentKey>
 ) -> Result<domain::AssignmentKey, Status> {
     let value =
@@ -235,7 +241,9 @@ pub(super) fn assignment_key(
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn members(values: Vec<String>) -> Result<Vec<String>, Status> {
+pub(in crate::server) fn members(
+    values: Vec<String>
+) -> Result<Vec<String>, Status> {
     let mut seen = std::collections::HashSet::new();
     for value in &values {
         if value.is_empty() || !seen.insert(value) {
@@ -248,7 +256,7 @@ pub(super) fn members(values: Vec<String>) -> Result<Vec<String>, Status> {
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn assignments(
+pub(in crate::server) fn assignments(
     value: domain::Assignments
 ) -> Result<wire::Assignments, Status> {
     if value.revision.is_empty() || value.key.reference.is_empty() {
@@ -268,7 +276,7 @@ pub(super) fn assignments(
 }
 
 #[cfg(feature = "authorization")]
-pub(super) fn assignment_mutation(
+pub(in crate::server) fn assignment_mutation(
     value: domain::Result<domain::Assignments>
 ) -> Result<wire::AssignmentMutationResult, Status> {
     use wire::assignment_mutation_result::Outcome;

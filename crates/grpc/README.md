@@ -61,26 +61,27 @@ Database-backed operations require the configured hosting store and schema.
 Protobuf generation uses `protoc` at build time, including protocol-only builds.
 The [proto directory](proto) contains the source contracts.
 
-## Service access policy
+## gRPC access policy
 
-All server builds can use `claviron::auth::access::{PeerIdentity, AccessTarget,
-AccessPolicy}` without selecting user or role management. Bind a host-owned
+All server builds expose `claviron_grpc::access::GrpcAccessPolicy` independently
+of user or role management. Bind an application-owned
 policy with `registry.bind_dyn`. No `validate_user` switch or separate
 application model is installed. Without a policy, existing mTLS admission stays
 in effect. A registered policy is consulted once when the first management RPC
 establishes the connection's session. Its actor or denial is retained until
 disconnect; errors never fall back to certificate-only admission.
 
-Each rejected connection emits one ERROR event with the service, the parsed
+Each denied connection emits one WARN event with the service, the parsed
 `client_cn` when exactly one is present, and the safe admission reason.
 Each successful policy grant emits one INFO event with the same peer fields.
 Repeated RPCs on that connection return the retained denial
-without another lookup or log. Reconnecting performs a new admission.
+without another lookup or log. Infrastructure failures emit ERROR. Reconnecting
+performs a new admission.
 
 The accepting transport validates the certificate before providing its exact
 public leaf DER, structured CNs and URI SAN candidates in `PeerIdentity`.
-`AccessTarget` uses `service = "grpc"` and `operation = "connect"`, never a
-header or a submitted scope. Dedicated H2 and Edge H2/H3 use the same session
+The policy receives only the verified `claviron::ssl::peer::PeerIdentity`;
+there is no client-selected service or target. Dedicated H2 and Edge H2/H3 use the same session
 admission, including reflection and capability discovery. Concurrent RPCs share
 the same pending decision. Cancelling one RPC does not restart validation.
 
@@ -106,7 +107,7 @@ fields and optional UI metadata use the shared
 revision tokens are opaque; no common users table or fixed profile fields are
 required. Validation and management scope belong to the downstream application.
 The native contracts are `claviron::auth::users::UserManager` for user CRUD and
-`claviron::auth::authorization::AuthorizationManager` for role/permission CRUD
+`claviron::auth::authorization::RolePermissionManager` for role/permission CRUD
 and assignments. Their `users` and `authorization` features are independent.
 
 Enable `users` for user CRUD, `authorization` for role/permission CRUD and
@@ -118,9 +119,9 @@ client stubs remain available without these features.
 The base server's hosting services still require the host's choice of a
 Claviron database backend; these management features do not select one.
 
-Bind the application's existing `UserManager` and/or `AuthorizationManager`
+Bind the application's existing `UserManager` and/or `RolePermissionManager`
 with `registry.bind_dyn`. User-management calls require an application actor
-returned by the host's `claviron::auth::access::AccessPolicy`.
+returned by the host's `claviron_grpc::access::GrpcAccessPolicy`.
 Managers recheck current authority, scope, validation and revisions on every call.
 
 Declare work bounds in `grpc.yaml`, for example:
@@ -138,7 +139,7 @@ Reload updates these bounds without replacing the manager. Tonic's default
 inbound message-size bound also applies. JSON decoding preserves exact integer
 values and rejects non-object documents. No database or GUI is installed here.
 
-`GetAssignmentSchema` discovers pivot operations through `AuthorizationManager`
+`GetAssignmentSchema` discovers pivot operations through `RolePermissionManager`
 independently of user CRUD schemas; its revision does not replace a user schema
 revision. `GetAssignments` and `ReplaceAssignments` use the same provider even
 when user CRUD is disabled.
@@ -167,7 +168,7 @@ Validation remains server-side and returns JSON-Pointer field violations through
 the mutation-result envelope. No schema is inferred from database columns.
 
 A server adapter routes user records to UserManager and role/permission records
-to AuthorizationManager. Every assignment operation belongs to AuthorizationManager,
+to RolePermissionManager. Every assignment operation belongs to RolePermissionManager,
 including user-role and user-permission pivots. Its `assignment_schema` discovers
 relationship capabilities independently of a user's CRUD form. A deployment may
 provide either manager; omitted capabilities must not load or require the other.
@@ -247,13 +248,15 @@ its own identity, ownership, and private-key export permissions.
 `CertAuthority` supplies public trust only. Local issuance explicitly acquires
 a `CertSigner` for the selected authority; reading trust does not load its CA key.
 
-`MtlsManager.RevokeCertificate` permanently revokes a local client/server
-certificate by its stored common name. It writes `revoked_at` through
-`HostingStore`, retaining the first timestamp and publishing the normal
-certificate-change notification. Responses and inventory include that timestamp
-independently of `enabled`. Re-enabling or renewing cannot undo revocation.
-Existing connections stay open; the shared TLS snapshot applies the committed
-change to new handshakes. ACME and CA-chain revocation are separate operations.
+`MtlsManager.RevokeCertificate` revokes any stored certificate by its common
+name, regardless of issuer. It writes `revoked_at` and `enabled=false` atomically
+through `HostingStore`, retains the first timestamp and publishes the normal
+certificate-change notification. Responses and inventory report revocation
+separately from enabled state. Re-enabling or renewing cannot clear revocation.
+The client-auth snapshot indexes revoked client certificates only; disabled
+server certificates are removed from the SNI resolver. Existing connections
+stay open. This local decision does not contact an external ACME authority or
+retroactively replace pinned CA trust.
 
 Local issuance, certificate import/export, and ACME issuance are separate
 operations. Import does not silently issue a replacement certificate or alter
@@ -263,6 +266,21 @@ trust material pinned by already running listeners.
 Client issuance accepts an optional `subject_uri`, stored in a URI SAN separately
 from the CN and DNS/IP aliases. Responses report URI identities parsed from the
 signed certificate. Export and same-key renewal preserve them. The application
-AccessPolicy owns user binding and authorization; the issuer infers neither.
+GrpcAccessPolicy owns user binding and authorization; the issuer infers neither.
 
 Part of [Claviron Extra](../../README.md).
+
+### Certificate permission scopes
+
+The host may register `claviron::auth::permission::PermissionCatalog` in its runtime
+registry. Include `permission::GrpcAccess` if the application exposes that
+permission, and add its own definitions as needed. A custom enrollment handler can
+also pass an `Arc<PermissionCatalog>` to `MtlsManager::with_permissions`.
+
+Client issuance accepts an optional `CertificatePermissions` message. Names must
+be registered in the host's catalog; malformed or unknown names are rejected
+before signing. Omission keeps an unscoped credential, while an explicitly empty
+message signs an empty scope. The response reports the scope from the certificate.
+Renewal checks that the original scope remains defined. No permission database is
+required by the catalog; the mTLS manager retains its existing hosting persistence.
+The catalog validates names, while the host authorizes delegation and service use.

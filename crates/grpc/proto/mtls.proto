@@ -3,13 +3,14 @@ package claviron.mtls;
 
 import "google/protobuf/timestamp.proto";
 
-// Local-CA issuance and revocation, independent of ACME. Material stays in hosting
+// Local-CA issuance and stored-certificate revocation. Material stays in hosting
 // database only; clients extract it separately when needed.
 service MtlsManager {
   rpc CreateRootCa(CreateRootCaRequest) returns (CertificateInfo);
   rpc CreateCertificate(CreateCertificateRequest) returns (CertificateInfo);
   rpc RenewCertificate(RenewCertificateRequest) returns (CertificateInfo);
-  // Permanently revoke a locally issued client/server certificate in hosting.
+  // Revoke any stored certificate locally and set enabled=false, regardless of issuer.
+  // This does not request revocation from an external ACME authority.
   // Repeated calls preserve the first revocation time. Existing sessions remain open.
   rpc RevokeCertificate(RevokeCertificateRequest) returns (CertificateInfo);
 }
@@ -46,6 +47,14 @@ message CreateCertificateRequest {
   // Optional client-only application identity, encoded as a URI SAN.
   // The issuer does not infer a user, namespace meaning, or permissions.
   optional string subject_uri = 7;
+  // Client-only, validated against the host's registered PermissionCatalog.
+  // Omission preserves an unscoped credential; an empty message declares no permissions.
+  // Catalog membership does not authorize the caller to delegate a permission.
+  CertificatePermissions permissions = 8;
+}
+
+message CertificatePermissions {
+  repeated string names = 1;
 }
 
 message CertificateInfo {
@@ -61,6 +70,8 @@ message CertificateInfo {
   // URI SAN identities read from the actual signed certificate.
   repeated string subject_uris = 9;
   google.protobuf.Timestamp revoked_at = 10;
+  // Read from the signed certificate, not inferred from users or DB permissions.
+  CertificatePermissions permissions = 11;
   // Intentionally no certificate, private key, bundle or filesystem path.
 }
 

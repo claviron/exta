@@ -1,19 +1,18 @@
-//! One service admission per connection, with request-local operation identity.
+//! One gRPC admission per connection, with request-local operation identity.
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::access::{AccessError, GrpcAccessPolicy};
 use claviron::auth::AnyAuthenticated;
-use claviron::auth::access::{
-    AccessError, AccessPolicy, AccessTarget, PeerIdentity,
-};
 use claviron::runtime::AppState;
+use claviron::ssl::peer::PeerIdentity;
 use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, Shared};
 use tonic::Status;
 
 #[derive(Clone)]
 pub(crate) struct Admission {
-    pub(crate) target: AccessTarget,
+    pub(crate) operation: String,
     pub(crate) actor: Option<AnyAuthenticated>,
 }
 
@@ -31,10 +30,6 @@ impl Session {
         bound: Duration,
     ) -> Self {
         let decision = async move {
-            let target = AccessTarget {
-                service: "grpc".into(),
-                operation: "connect".into(),
-            };
             let client_cn = peer.as_ref().and_then(|peer| {
                 match peer.common_names.as_slice() {
                     [name] => Some(name.as_str()),
@@ -43,7 +38,7 @@ impl Session {
             });
             let decision = tokio::time::timeout(bound, async {
                 let Some(policy) =
-                    state.registry_ref().resolve_dyn::<dyn AccessPolicy>()
+                    state.registry_ref().resolve_dyn::<dyn GrpcAccessPolicy>()
                 else {
                     return Ok(None);
                 };
@@ -53,7 +48,7 @@ impl Session {
                     )
                 })?;
                 let actor =
-                    policy.authorize(peer, &target).await.map_err(|error| {
+                    policy.authorize(peer).await.map_err(|error| {
                         let message = error.to_string();
                         match error {
                             AccessError::Unauthenticated => {
@@ -65,14 +60,11 @@ impl Session {
                             AccessError::Unavailable => {
                                 Status::unavailable(message)
                             }
-                            AccessError::Unsupported => {
-                                Status::unimplemented(message)
-                            }
                         }
                     })?;
                 tracing::info!(
-                    service = %target.service,
-                    operation = %target.operation,
+                    service = "grpc",
+                    operation = "connect",
                     client_cn,
                     code = ?tonic::Code::Ok,
                     "✅ gRPC access policy accepted a TLS-authenticated peer"
@@ -87,8 +79,8 @@ impl Session {
                 match error.code() {
                     tonic::Code::Unauthenticated | tonic::Code::PermissionDenied => {
                         tracing::warn!(
-                            service = %target.service,
-                            operation = %target.operation,
+                            service = "grpc",
+                            operation = "connect",
                             client_cn,
                             code = ?error.code(),
                             error = %error.message(),
@@ -97,8 +89,8 @@ impl Session {
                     }
                     _ => {
                         tracing::error!(
-                            service = %target.service,
-                            operation = %target.operation,
+                            service = "grpc",
+                            operation = "connect",
                             client_cn,
                             code = ?error.code(),
                             error = %error.message(),
@@ -116,12 +108,12 @@ impl Session {
 
     pub(crate) async fn admit(
         &self,
-        target: AccessTarget,
+        operation: String,
     ) -> Result<Admission, Status> {
         // Concurrent streams share initialization and the terminal result,
         // including a denial. Cancelling one RPC does not restart validation.
         let actor = self.decision.clone().await?;
-        Ok(Admission { target, actor })
+        Ok(Admission { operation, actor })
     }
 }
 

@@ -8,19 +8,23 @@ pub(crate) mod config;
 pub(crate) mod control;
 pub(crate) mod dedicated;
 pub use dedicated::GrpcListener;
+#[cfg(feature = "authorization")]
+pub(crate) mod authorization;
 #[cfg(feature = "dns")]
 pub(crate) mod dns;
 #[cfg(feature = "domains")]
 pub(crate) mod domains;
 pub mod greeter;
 pub(crate) mod linked;
+#[cfg(any(feature = "users", feature = "authorization"))]
+pub mod management;
 pub mod provider;
 pub mod service;
 pub(crate) mod services;
 #[cfg(feature = "tasks")]
 pub(crate) mod tasks;
-#[cfg(any(feature = "users", feature = "authorization"))]
-pub mod users;
+#[cfg(feature = "users")]
+pub(crate) mod users;
 #[cfg(feature = "workers")]
 pub(crate) mod workers;
 

@@ -1,4 +1,4 @@
-//! Database-backed local CA issuance and revocation for management and applications.
+//! Local CA issuance and database-backed certificate revocation.
 //!
 //! Callers authorize operations before invoking this manager. It performs no
 //! authentication and creates no HTTP routes. It uses the crate's protobuf DTOs
@@ -6,6 +6,7 @@
 //! Issuance returns metadata; material stays in the hosting database.
 use std::sync::Arc;
 
+use claviron::auth::permission::PermissionCatalog;
 use claviron::hosting::{
     CertificateKind, HostedCertificate, HostingError, HostingService,
     HostingStore, NewCertificate,
@@ -22,7 +23,7 @@ use crate::proto::mtls::{
     RenewCertificateRequest, RevokeCertificateRequest,
 };
 
-/// Root CA creation, local-CA signing and leaf revocation over the hosting store.
+/// Root CA creation, local-CA signing and certificate revocation in hosting.
 ///
 /// Application handlers must enforce their own enrollment/authorization policy.
 /// The manager never derives permission from a request's chosen CN or issuer.
@@ -30,10 +31,12 @@ pub struct MtlsManager {
     store: HostingStore,
     server_id: Option<i32>,
     authority: Option<Arc<CertAuthority>>,
+    permissions: Option<Arc<PermissionCatalog>>,
 }
 
 impl MtlsManager {
-    /// Permanently revoke a local certificate, retaining its first timestamp.
+    /// Revoke a stored certificate and disable it, retaining its first timestamp.
+    /// No issuer ownership or signing key is required for this local DB decision.
     /// Store notifications refresh TLS snapshots after the committed mutation.
     pub async fn revoke_certificate(
         &self,
@@ -49,26 +52,6 @@ impl MtlsManager {
             .await
             .map_err(storage_status)?
             .ok_or_else(|| Status::not_found("certificate not found"))?;
-        if hosted.certificate.kind == CertificateKind::Ca {
-            return Err(Status::failed_precondition(
-                "CA revocation requires a separate trust-chain policy; select a client or server certificate",
-            ));
-        }
-        if let Some(id) = hosted.certificate.issuer_id {
-            let issuer = self
-                .store
-                .issuer_by_id(id)
-                .await
-                .map_err(storage_status)?
-                .ok_or_else(|| {
-                    Status::failed_precondition("certificate issuer not found")
-                })?;
-            if issuer.kind != claviron::hosting::IssuerKind::LocalCa {
-                return Err(Status::failed_precondition(
-                    "ACME certificates require revocation by their ACME authority",
-                ));
-            }
-        }
         self.store
             .revoke_certificate(
                 hosted.certificate.id,
@@ -84,7 +67,7 @@ impl MtlsManager {
             .ok_or_else(|| {
                 Status::not_found("certificate not found after revocation")
             })?;
-        Ok(metadata(saved))
+        metadata(saved)
     }
     /// Renew the original identity using its persisted key and signer.
     pub async fn renew_certificate(
@@ -111,6 +94,26 @@ impl MtlsManager {
             return Err(Status::failed_precondition(
                 "disabled certificates cannot be renewed",
             ));
+        }
+        let peer = claviron::ssl::peer::peer_identity(&original.certs_der)
+            .map_err(|_| {
+                Status::failed_precondition(
+                    "stored certificate identity cannot be decoded",
+                )
+            })?;
+        if let Some(scope) = claviron::ssl::permission::from_uris(
+            peer.subject_uris.iter().map(String::as_str),
+        )
+        .map_err(|error| Status::failed_precondition(error.to_string()))?
+        {
+            let catalog = self.permissions.as_ref().ok_or_else(|| {
+                Status::failed_precondition(
+                    "PermissionCatalog is not registered",
+                )
+            })?;
+            catalog.validate(scope.iter()).map_err(|error| {
+                Status::failed_precondition(error.to_string())
+            })?;
         }
         let issuer = if let Some(id) = original.issuer_id {
             let issuer = self
@@ -193,7 +196,7 @@ impl MtlsManager {
                 HostingError::Conflict(message) => Status::aborted(message),
                 other => storage_status(other),
             })?;
-        Ok(metadata(saved))
+        metadata(saved)
     }
     /// Use an explicit store. A server id is required only for server certificates.
     /// The authority is the default for issuance requests without an issuer name.
@@ -202,7 +205,16 @@ impl MtlsManager {
         server_id: Option<i32>,
         authority: Option<Arc<CertAuthority>>,
     ) -> Self {
-        Self { store, server_id, authority }
+        Self { store, server_id, authority, permissions: None }
+    }
+
+    /// Use the same immutable catalog as the application's token issuers.
+    pub fn with_permissions(
+        mut self,
+        catalog: Arc<PermissionCatalog>,
+    ) -> Self {
+        self.permissions = Some(catalog);
+        self
     }
 
     /// Resolve the application's managed hosting store and configured authority.
@@ -216,11 +228,14 @@ impl MtlsManager {
         let store = hosting.store().map_err(|_| {
             Status::failed_precondition("HostingService is not initialized")
         })?;
-        Ok(Self::new(
+        let mut manager = Self::new(
             store,
             hosting.server_id(),
             state.registry_ref().resolve::<CertAuthority>(),
-        ))
+        );
+        manager.permissions =
+            state.registry_ref().resolve::<PermissionCatalog>();
+        Ok(manager)
     }
     /// Generate and atomically store a self-signed CA and its issuer identity.
     pub async fn create_root_ca(
@@ -278,7 +293,22 @@ impl MtlsManager {
             kind,
             path_len,
             subject_uri,
+            permissions,
         } = input(request)?;
+        // Check vocabulary before any DB lookup or signing work.
+        let catalog = if let Some(names) = &permissions {
+            let catalog = self.permissions.clone().ok_or_else(|| {
+                Status::failed_precondition(
+                    "PermissionCatalog is not registered",
+                )
+            })?;
+            catalog
+                .validate(names)
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
+            Some(catalog)
+        } else {
+            None
+        };
         let hosting = &self.store;
         let server_id = if kind == CertificateKind::Server {
             Some(self.server_id.ok_or_else(|| {
@@ -330,12 +360,23 @@ impl MtlsManager {
         let signing_aliases = aliases.clone();
         let material = tokio::task::spawn_blocking(move || {
             if kind == CertificateKind::Client {
-                authority.issue_client_certificate(
-                    &signing_name,
-                    &signing_aliases,
-                    subject_uri.as_ref(),
-                    validity_days,
-                )
+                if let (Some(catalog), Some(names)) = (&catalog, &permissions) {
+                    authority.issue_client_certificate_with_permissions(
+                        &signing_name,
+                        &signing_aliases,
+                        subject_uri.as_ref(),
+                        validity_days,
+                        catalog,
+                        names,
+                    )
+                } else {
+                    authority.issue_client_certificate(
+                        &signing_name,
+                        &signing_aliases,
+                        subject_uri.as_ref(),
+                        validity_days,
+                    )
+                }
             } else {
                 authority.issue_certificate(
                     kind,
@@ -388,6 +429,7 @@ struct IssuanceRequest {
     kind: CertificateKind,
     path_len: Option<u8>,
     subject_uri: Option<claviron::ssl::SubjectUri>,
+    permissions: Option<Vec<String>>,
 }
 
 fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
@@ -438,12 +480,22 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
             "CA issuance takes its common name, not leaf SAN aliases",
         ));
     }
+    if request.permissions.is_some() && kind != CertificateKind::Client {
+        return Err(Status::invalid_argument(
+            "permissions only apply to client certificates",
+        ));
+    }
     let subject_uri = request
         .subject_uri
         .map(|value| {
             if kind != CertificateKind::Client {
                 return Err(Status::invalid_argument(
                     "subject_uri only applies to client certificates",
+                ));
+            }
+            if claviron::ssl::permission::is_permission_uri(&value) {
+                return Err(Status::invalid_argument(
+                    "permission declarations must use the permissions field",
                 ));
             }
             value.parse::<claviron::ssl::SubjectUri>().map_err(|_| {
@@ -468,6 +520,7 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
         kind,
         path_len,
         subject_uri,
+        permissions: request.permissions.map(|scope| scope.names),
     })
 }
 
@@ -521,15 +574,27 @@ async fn persist(
         None => hosting.insert_unassigned_certificate(new, &aliases).await,
     }
     .map_err(storage_status)?;
-    Ok(metadata(saved))
+    metadata(saved)
 }
 
-fn metadata(saved: HostedCertificate) -> CertificateInfo {
+fn metadata(saved: HostedCertificate) -> Result<CertificateInfo, Status> {
     let cert = saved.certificate;
-    CertificateInfo {
-        subject_uris: claviron::ssl::peer::peer_identity(&cert.certs_der)
-            .map(|peer| peer.subject_uris)
-            .unwrap_or_default(),
+    let peer =
+        claviron::ssl::peer::peer_identity(&cert.certs_der).map_err(|_| {
+            Status::failed_precondition(
+                "stored certificate identity cannot be decoded",
+            )
+        })?;
+    let permissions = claviron::ssl::permission::from_uris(
+        peer.subject_uris.iter().map(String::as_str),
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?
+    .map(|scope| crate::proto::mtls::CertificatePermissions {
+        names: scope.iter().map(ToString::to_string).collect(),
+    });
+    Ok(CertificateInfo {
+        permissions,
+        subject_uris: peer.subject_uris,
         id: cert.id,
         issuer_id: cert.issuer_id,
         kind: match cert.kind {
@@ -562,7 +627,7 @@ fn metadata(saved: HostedCertificate) -> CertificateInfo {
             seconds: date.unix_timestamp(),
             nanos: 0,
         }),
-    }
+    })
 }
 
 #[cfg(test)]

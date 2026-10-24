@@ -66,7 +66,7 @@ pub(crate) fn create_management_routes(
 
     #[cfg(any(feature = "users", feature = "authorization"))]
     let routes =
-        routes.add_service(super::users::create_service(state.clone()));
+        routes.add_service(super::management::create_service(state.clone()));
 
     #[cfg(feature = "tasks")]
     let routes = routes.add_service(task_service);

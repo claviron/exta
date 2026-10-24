@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use claviron::auth::access::AccessTarget;
 use claviron::edge::BypassHandler;
 use claviron::http::ext::ConnCtx;
 use claviron::http::{RouteBody, RouteFuture, RouteResponse, boxed_body};
@@ -121,10 +120,7 @@ impl BypassHandler for ManagementGrpcHandler {
         }
 
         let routes = self.routes.clone();
-        let target = AccessTarget {
-            service: "grpc".into(),
-            operation: req.uri().path().to_owned(),
-        };
+        let operation = req.uri().path().to_owned();
         let request_timeout =
             request_timeout_for(req.uri().path(), self.request_timeout);
         let permits = self.permits.clone();
@@ -142,7 +138,7 @@ impl BypassHandler for ManagementGrpcHandler {
             };
 
             let serve = async {
-                let admitted = session.admit(target).await?;
+                let admitted = session.admit(operation).await?;
                 req.extensions_mut().insert(admitted);
                 let response = routes
                     .oneshot(req)

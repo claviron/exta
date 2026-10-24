@@ -19,7 +19,7 @@ pub const CONFIG_FILE: &str = "grpc.yaml";
 pub struct GrpcConfig {
     #[cfg(any(feature = "users", feature = "authorization"))]
     #[serde(default)]
-    pub user_management: Option<super::users::Limits>,
+    pub user_management: Option<super::management::Limits>,
     #[serde(default)]
     pub listener: Option<ListenerConfig>,
     #[serde(default, deserialize_with = "one_or_many", alias = "vhost")]

@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn issuance_input_requires_explicit_validity_and_exact_client_names() {
     let request = |name: &str, days| CreateCertificateRequest {
+        permissions: None,
         subject_uri: None,
         issuer: None,
         ca_path_len: None,
@@ -57,6 +58,7 @@ async fn ca_server_and_client_material_stays_in_database() {
     );
     let default_client = configured
         .create_certificate(CreateCertificateRequest {
+            permissions: None,
             subject_uri: None,
             issuer: None,
             common_name: "default-client.test".into(),
@@ -68,6 +70,46 @@ async fn ca_server_and_client_material_stays_in_database() {
         .await
         .unwrap();
     assert_eq!(default_client.issuer_id, Some(issuer.id));
+    let mut catalog = PermissionCatalog::new();
+    catalog.register::<crate::permission::GrpcAccess>().unwrap();
+    let scoped_manager = configured.with_permissions(Arc::new(catalog));
+    let scoped = scoped_manager
+        .create_certificate(CreateCertificateRequest {
+            common_name: "scoped-client.test".into(),
+            aliases: vec![],
+            validity_days: 1,
+            kind: crate::proto::mtls::CertificateKind::Client as i32,
+            issuer: None,
+            ca_path_len: None,
+            subject_uri: None,
+            permissions: Some(crate::proto::mtls::CertificatePermissions {
+                names: vec!["grpc.access".into(), "grpc.access".into()],
+            }),
+        })
+        .await
+        .unwrap();
+    assert_eq!(scoped.permissions.unwrap().names, ["grpc.access"]);
+    let renewed = scoped_manager
+        .renew_certificate(RenewCertificateRequest {
+            common_name: "scoped-client.test".into(),
+            validity_days: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(renewed.permissions.unwrap().names, ["grpc.access"]);
+    let removed =
+        scoped_manager.with_permissions(Arc::new(PermissionCatalog::new()));
+    assert_eq!(
+        removed
+            .renew_certificate(RenewCertificateRequest {
+                common_name: "scoped-client.test".into(),
+                validity_days: 1,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
     for (kind, name, server) in [
         (CertificateKind::Client, "client.test", None),
         (CertificateKind::Server, "server.test", Some(1)),
@@ -75,6 +117,7 @@ async fn ca_server_and_client_material_stays_in_database() {
     ] {
         let info = manager
             .create_certificate(CreateCertificateRequest {
+                permissions: None,
                 subject_uri: (kind == CertificateKind::Client).then(|| {
                     "urn:uuid:00000000-0000-4000-8000-000000000007".into()
                 }),
@@ -182,13 +225,16 @@ async fn ca_server_and_client_material_stays_in_database() {
     let revoke =
         || RevokeCertificateRequest { common_name: "client.test".into() };
     let revoked = manager.revoke_certificate(revoke()).await.unwrap();
-    assert!(revoked.enabled);
+    assert!(!revoked.enabled);
     assert!(revoked.revoked_at.is_some());
     assert_eq!(
         manager.revoke_certificate(revoke()).await.unwrap().revoked_at,
         revoked.revoked_at
     );
     store.set_certificate_enabled("client.test", true).await.unwrap();
+    let revoked_again = manager.revoke_certificate(revoke()).await.unwrap();
+    assert!(!revoked_again.enabled);
+    assert_eq!(revoked_again.revoked_at, revoked.revoked_at);
     assert_eq!(
         store
             .certificate_by_id(revoked.id)
@@ -213,7 +259,10 @@ async fn ca_server_and_client_material_stays_in_database() {
     );
     assert_eq!(
         store
-            .revoked_certificate_chains(OffsetDateTime::now_utc())
+            .revoked_certificate_chains(
+                OffsetDateTime::now_utc(),
+                CertificateKind::Client
+            )
             .await
             .unwrap()
             .len(),
@@ -229,6 +278,49 @@ async fn ca_server_and_client_material_stays_in_database() {
             .code(),
         tonic::Code::NotFound
     );
+    // Issuer ownership is irrelevant to revoking the stored identity locally.
+    sqlx::query("UPDATE hosting_certificates SET issuer_id = ? WHERE cn = 'server.test'")
+        .bind(other.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let hosted = store.certificate_by_cn("server.test").await.unwrap().unwrap();
+    let resolver = claviron::tls::CertResolver::new(
+        std::collections::HashMap::new(),
+        Arc::new(
+            claviron::tls::pem::db_cert_to_certified_key(&hosted.certificate)
+                .unwrap(),
+        ),
+    );
+    let certificates =
+        claviron::tls::CertificateManager::new(&store, &resolver);
+    certificates.upsert(hosted).unwrap();
+    assert!(resolver.contains("server.test"));
+    assert!(resolver.contains("alternate.test"));
+    for name in ["server.test", "root.test"] {
+        let revoked = manager
+            .revoke_certificate(RevokeCertificateRequest {
+                common_name: name.into(),
+            })
+            .await
+            .unwrap();
+        assert!(!revoked.enabled);
+        assert!(revoked.revoked_at.is_some());
+    }
+    certificates.upsert_cn("server.test").await.unwrap();
+    assert!(!resolver.contains("server.test"));
+    assert!(!resolver.contains("alternate.test"));
+    assert_eq!(
+        store
+            .revoked_certificate_chains(
+                OffsetDateTime::now_utc(),
+                CertificateKind::Client
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     store.set_certificate_enabled("root.test", false).await.unwrap();
     assert!(CertAuthority::from_issuer(&store, "root.test").await.is_err());
     assert!(authority.validate_issuer(&store).await.is_err());
@@ -237,6 +329,7 @@ async fn ca_server_and_client_material_stays_in_database() {
 #[test]
 fn issuance_identity_is_client_only_and_a_uri_not_a_hostname_alias() {
     let mut request = CreateCertificateRequest {
+        permissions: None,
         common_name: "display.test".into(),
         validity_days: 1,
         kind: crate::proto::mtls::CertificateKind::Client as i32,
@@ -256,4 +349,45 @@ fn issuance_identity_is_client_only_and_a_uri_not_a_hostname_alias() {
     request.kind = crate::proto::mtls::CertificateKind::Client as i32;
     request.subject_uri = Some("not a URI".into());
     assert!(input(request).is_err());
+}
+
+#[tokio::test]
+async fn permission_catalog_rejects_unknown_names_before_storage_or_signing() {
+    use crate::proto::mtls::CertificatePermissions;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_lazy("sqlite::memory:")
+        .unwrap();
+    let manager = MtlsManager::new(HostingStore::sqlite(pool), None, None);
+    let mut request = CreateCertificateRequest {
+        common_name: "client.test".into(),
+        aliases: vec![],
+        validity_days: 1,
+        kind: crate::proto::mtls::CertificateKind::Client as i32,
+        issuer: None,
+        ca_path_len: None,
+        subject_uri: None,
+        permissions: Some(CertificatePermissions {
+            names: vec!["grpc.access".into()],
+        }),
+    };
+    assert_eq!(
+        manager.create_certificate(request.clone()).await.unwrap_err().code(),
+        tonic::Code::FailedPrecondition
+    );
+    let mut catalog = PermissionCatalog::new();
+    catalog.register::<crate::permission::GrpcAccess>().unwrap();
+    let manager = manager.with_permissions(Arc::new(catalog));
+    request
+        .permissions
+        .as_mut()
+        .unwrap()
+        .names
+        .push("undefined.permission".into());
+    let error = manager.create_certificate(request.clone()).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    request.permissions.as_mut().unwrap().names = vec!["bad permission".into()];
+    assert_eq!(
+        manager.create_certificate(request).await.unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
 }

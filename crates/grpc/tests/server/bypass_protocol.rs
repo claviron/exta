@@ -78,15 +78,13 @@ fn request(
             client_cert: Some(TlsClientCertInfo {
                 subject_dn: "CN=operator".to_owned(),
                 issuer_dn: "CN=example CA".to_owned(),
-                identity: Some(Arc::new(
-                    claviron::auth::access::PeerIdentity {
-                        certificate: Arc::from([]),
-                        subject_dn: "CN=operator".into(),
-                        issuer_dn: "CN=example CA".into(),
-                        common_names: vec!["operator".into()],
-                        subject_uris: vec!["urn:example:subject:one".into()],
-                    },
-                )),
+                identity: Some(Arc::new(claviron::ssl::peer::PeerIdentity {
+                    certificate: Arc::from([]),
+                    subject_dn: "CN=operator".into(),
+                    issuer_dn: "CN=example CA".into(),
+                    common_names: vec!["operator".into()],
+                    subject_uris: vec!["urn:example:subject:one".into()],
+                })),
             }),
         }),
     }));
@@ -128,24 +126,23 @@ async fn grpc_h3_requires_verified_mtls_and_http1_remains_rejected() {
 
 struct AccessCheck {
     allow: std::sync::atomic::AtomicBool,
-    targets: std::sync::Mutex<Vec<AccessTarget>>,
+    calls: std::sync::atomic::AtomicUsize,
 }
 #[async_trait::async_trait]
-impl claviron::auth::access::AccessPolicy for AccessCheck {
+impl crate::access::GrpcAccessPolicy for AccessCheck {
     async fn authorize(
         &self,
-        peer: &claviron::auth::access::PeerIdentity,
-        target: &AccessTarget,
+        peer: &claviron::ssl::peer::PeerIdentity,
     ) -> Result<
         Option<claviron::auth::AnyAuthenticated>,
-        claviron::auth::access::AccessError,
+        crate::access::AccessError,
     > {
-        self.targets.lock().unwrap().push(target.clone());
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(peer.subject_uris, ["urn:example:subject:one"]);
         if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
             Ok(None)
         } else {
-            Err(claviron::auth::access::AccessError::Forbidden)
+            Err(crate::access::AccessError::Forbidden)
         }
     }
 }
@@ -157,12 +154,12 @@ async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnec
         let state = AppState::standalone("grpc-access-test", ".");
         let policy = Arc::new(AccessCheck {
             allow: AtomicBool::new(true),
-            targets: std::sync::Mutex::new(vec![]),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         });
         state.registry_ref().insert(policy.clone()).unwrap();
         state
             .registry_ref()
-            .bind_dyn::<dyn claviron::auth::access::AccessPolicy, AccessCheck>(
+            .bind_dyn::<dyn crate::access::GrpcAccessPolicy, AccessCheck>(
                 |value| value,
             )
             .unwrap();
@@ -177,7 +174,7 @@ async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnec
         same_connection.extensions_mut().insert(connection);
         let response = handler.call(same_connection).await.unwrap();
         assert!(!response.headers().contains_key("grpc-status"));
-        assert_eq!(policy.targets.lock().unwrap().len(), 1);
+        assert_eq!(policy.calls.load(Ordering::SeqCst), 1);
 
         let denied = request(version, true);
         let denied_connection =
@@ -192,21 +189,9 @@ async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnec
             .insert("x-access-target", "allowed".parse().unwrap());
         let response = handler.call(still_denied).await.unwrap();
         assert_eq!(response.headers()["grpc-status"], "7");
-        assert_eq!(
-            policy.targets.lock().unwrap().as_slice(),
-            [
-                AccessTarget {
-                    service: "grpc".into(),
-                    operation: "connect".into()
-                },
-                AccessTarget {
-                    service: "grpc".into(),
-                    operation: "connect".into()
-                },
-            ]
-        );
+        assert_eq!(policy.calls.load(Ordering::SeqCst), 2);
         let response = handler.call(request(version, false)).await.unwrap();
         assert_eq!(response.headers()["grpc-status"], "16");
-        assert_eq!(policy.targets.lock().unwrap().len(), 2);
+        assert_eq!(policy.calls.load(Ordering::SeqCst), 2);
     }
 }
