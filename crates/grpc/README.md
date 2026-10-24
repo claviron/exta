@@ -71,8 +71,10 @@ in effect. A registered policy is consulted once when the first management RPC
 establishes the connection's session. Its actor or denial is retained until
 disconnect; errors never fall back to certificate-only admission.
 
-Each rejected connection emits one ERROR event with the service and safe
-admission reason. Repeated RPCs on that connection return the retained denial
+Each rejected connection emits one ERROR event with the service, the parsed
+`client_cn` when exactly one is present, and the safe admission reason.
+Each successful policy grant emits one INFO event with the same peer fields.
+Repeated RPCs on that connection return the retained denial
 without another lookup or log. Reconnecting performs a new admission.
 
 The accepting transport validates the certificate before providing its exact

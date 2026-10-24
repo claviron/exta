@@ -35,6 +35,12 @@ impl Session {
                 service: "grpc".into(),
                 operation: "connect".into(),
             };
+            let client_cn = peer.as_ref().and_then(|peer| {
+                match peer.common_names.as_slice() {
+                    [name] => Some(name.as_str()),
+                    _ => None,
+                }
+            });
             let decision = tokio::time::timeout(bound, async {
                 let Some(policy) =
                     state.registry_ref().resolve_dyn::<dyn AccessPolicy>()
@@ -46,23 +52,32 @@ impl Session {
                         "verified certificate identity is unavailable",
                     )
                 })?;
-                policy.authorize(peer, &target).await.map_err(|error| {
-                    let message = error.to_string();
-                    match error {
-                        AccessError::Unauthenticated => {
-                            Status::unauthenticated(message)
+                let actor =
+                    policy.authorize(peer, &target).await.map_err(|error| {
+                        let message = error.to_string();
+                        match error {
+                            AccessError::Unauthenticated => {
+                                Status::unauthenticated(message)
+                            }
+                            AccessError::Forbidden => {
+                                Status::permission_denied(message)
+                            }
+                            AccessError::Unavailable => {
+                                Status::unavailable(message)
+                            }
+                            AccessError::Unsupported => {
+                                Status::unimplemented(message)
+                            }
                         }
-                        AccessError::Forbidden => {
-                            Status::permission_denied(message)
-                        }
-                        AccessError::Unavailable => {
-                            Status::unavailable(message)
-                        }
-                        AccessError::Unsupported => {
-                            Status::unimplemented(message)
-                        }
-                    }
-                })
+                    })?;
+                tracing::info!(
+                    service = %target.service,
+                    operation = %target.operation,
+                    client_cn,
+                    code = ?tonic::Code::Ok,
+                    "gRPC access policy accepted a TLS-authenticated peer"
+                );
+                Ok(actor)
             })
             .await
             .unwrap_or_else(|_| {
@@ -72,6 +87,7 @@ impl Session {
                 tracing::error!(
                     service = %target.service,
                     operation = %target.operation,
+                    client_cn,
                     code = ?error.code(),
                     error = %error.message(),
                     "gRPC access policy rejected a TLS-authenticated peer"
