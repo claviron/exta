@@ -69,8 +69,9 @@ fields and optional UI metadata use the shared
 [management.proto](proto/management.proto) envelope. Public references and
 revision tokens are opaque; no common users table or fixed profile fields are
 required. Validation and management scope belong to the downstream application.
-The native contract is `claviron::auth::users::UserManager`; gRPC is one adapter
-for this transport-independent API.
+The native contracts are `claviron::auth::users::UserManager` for user CRUD and
+`claviron::auth::authorization::AuthorizationManager` for role/permission CRUD
+and assignments. Their `users` and `authorization` features are independent.
 
 Generated protocol types and client stubs are available now. No user-management
 handler or route is installed by `server`; an application adapter and GUI are
@@ -78,7 +79,7 @@ not part of this protocol-only surface.
 
 ### Schema contract
 
-Schemas come from the application's `UserManager`, with separate projections:
+Schemas come from the selected application manager, with separate projections:
 
 - `record_schema_json` describes authorized output fields.
 - `create.data_schema_json` describes the complete creation object. Required
@@ -98,6 +99,12 @@ authority. Clients reject unsupported forms rather than silently dropping rules.
 Field, constraint, UI or operation changes require a new schema revision.
 Validation remains server-side and returns JSON-Pointer field violations through
 the mutation-result envelope. No schema is inferred from database columns.
+
+A server adapter routes user records to UserManager and role/permission records
+to AuthorizationManager. Every assignment operation belongs to AuthorizationManager,
+including user-role and user-permission pivots. Its `assignment_schema` discovers
+relationship capabilities independently of a user's CRUD form. A deployment may
+provide either manager; omitted capabilities must not load or require the other.
 
 ## Vhost configuration
 
