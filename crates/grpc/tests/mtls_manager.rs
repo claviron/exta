@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn issuance_input_requires_explicit_validity_and_exact_client_names() {
     let request = |name: &str, days| CreateCertificateRequest {
+        subject_uri: None,
         issuer: None,
         ca_path_len: None,
         kind: crate::proto::mtls::CertificateKind::Client as i32,
@@ -56,6 +57,7 @@ async fn ca_server_and_client_material_stays_in_database() {
     );
     let default_client = configured
         .create_certificate(CreateCertificateRequest {
+            subject_uri: None,
             issuer: None,
             common_name: "default-client.test".into(),
             aliases: vec![],
@@ -73,6 +75,9 @@ async fn ca_server_and_client_material_stays_in_database() {
     ] {
         let info = manager
             .create_certificate(CreateCertificateRequest {
+                subject_uri: (kind == CertificateKind::Client).then(|| {
+                    "urn:uuid:00000000-0000-4000-8000-000000000007".into()
+                }),
                 issuer: Some("root.test".into()),
                 common_name: name.into(),
                 aliases: if kind == CertificateKind::Ca {
@@ -108,6 +113,19 @@ async fn ca_server_and_client_material_stays_in_database() {
         let saved = store.certificate_by_id(info.id).await.unwrap().unwrap();
         assert!(!saved.key_der.is_empty());
         assert_eq!(saved.kind, kind);
+        let peer =
+            claviron::ssl::peer::peer_identity(&saved.certs_der).unwrap();
+        assert_eq!(
+            peer.subject_uris.len(),
+            usize::from(kind == CertificateKind::Client)
+        );
+        if kind == CertificateKind::Client {
+            assert_eq!(
+                peer.subject_uris,
+                ["urn:uuid:00000000-0000-4000-8000-000000000007"]
+            );
+        }
+
         let renewed = manager
             .renew_certificate(RenewCertificateRequest {
                 common_name: name.into(),
@@ -164,4 +182,28 @@ async fn ca_server_and_client_material_stays_in_database() {
     store.set_certificate_enabled("root.test", false).await.unwrap();
     assert!(CertAuthority::from_issuer(&store, "root.test").await.is_err());
     assert!(authority.validate_issuer(&store).await.is_err());
+}
+
+#[test]
+fn issuance_identity_is_client_only_and_a_uri_not_a_hostname_alias() {
+    let mut request = CreateCertificateRequest {
+        common_name: "display.test".into(),
+        validity_days: 1,
+        kind: crate::proto::mtls::CertificateKind::Client as i32,
+        subject_uri: Some(
+            "urn:uuid:00000000-0000-4000-8000-000000000007".into(),
+        ),
+        ..Default::default()
+    };
+    let parsed = input(request.clone()).unwrap();
+    assert_eq!(parsed.aliases, ["display.test"]);
+    assert_eq!(
+        parsed.subject_uri.unwrap().as_str(),
+        request.subject_uri.as_deref().unwrap()
+    );
+    request.kind = crate::proto::mtls::CertificateKind::Server as i32;
+    assert!(input(request.clone()).is_err());
+    request.kind = crate::proto::mtls::CertificateKind::Client as i32;
+    request.subject_uri = Some("not a URI".into());
+    assert!(input(request).is_err());
 }

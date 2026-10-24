@@ -236,4 +236,9 @@ operations. Import does not silently issue a replacement certificate or alter
 runtime trust. Creating or renewing a CA does not automatically replace the
 trust material pinned by already running listeners.
 
+Client issuance accepts an optional `subject_uri`, stored in a URI SAN separately
+from the CN and DNS/IP aliases. Responses report URI identities parsed from the
+signed certificate. Export and same-key renewal preserve them. The application
+AccessPolicy owns user binding and authorization; the issuer infers neither.
+
 Part of [Claviron Extra](../../README.md).

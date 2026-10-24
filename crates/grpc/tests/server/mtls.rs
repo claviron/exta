@@ -5,6 +5,7 @@ async fn issuance_fails_closed_without_hosting() {
     let service = MtlsService { state: AppState::standalone("mtls-test", ".") };
     let error = service
         .create_certificate(Request::new(CreateCertificateRequest {
+            subject_uri: None,
             issuer: None,
             ca_path_len: None,
             kind: crate::proto::mtls::CertificateKind::Client as i32,

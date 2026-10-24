@@ -213,8 +213,14 @@ impl MtlsManager {
         request: CreateCertificateRequest,
     ) -> Result<CertificateInfo, Status> {
         let issuer_name = request.issuer.clone();
-        let IssuanceRequest { name, aliases, validity_days, kind, path_len } =
-            input(request)?;
+        let IssuanceRequest {
+            name,
+            aliases,
+            validity_days,
+            kind,
+            path_len,
+            subject_uri,
+        } = input(request)?;
         let hosting = &self.store;
         let server_id = if kind == CertificateKind::Server {
             Some(self.server_id.ok_or_else(|| {
@@ -265,13 +271,22 @@ impl MtlsManager {
         let signing_name = name.clone();
         let signing_aliases = aliases.clone();
         let material = tokio::task::spawn_blocking(move || {
-            authority.issue_certificate(
-                kind,
-                &signing_name,
-                &signing_aliases,
-                validity_days,
-                path_len,
-            )
+            if kind == CertificateKind::Client {
+                authority.issue_client_certificate(
+                    &signing_name,
+                    &signing_aliases,
+                    subject_uri.as_ref(),
+                    validity_days,
+                )
+            } else {
+                authority.issue_certificate(
+                    kind,
+                    &signing_name,
+                    &signing_aliases,
+                    validity_days,
+                    path_len,
+                )
+            }
         })
         .await
         .map_err(|_| Status::internal("certificate signing task failed"))?
@@ -314,6 +329,7 @@ struct IssuanceRequest {
     validity_days: u32,
     kind: CertificateKind,
     path_len: Option<u8>,
+    subject_uri: Option<claviron::ssl::SubjectUri>,
 }
 
 fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
@@ -364,6 +380,21 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
             "CA issuance takes its common name, not leaf SAN aliases",
         ));
     }
+    let subject_uri = request
+        .subject_uri
+        .map(|value| {
+            if kind != CertificateKind::Client {
+                return Err(Status::invalid_argument(
+                    "subject_uri only applies to client certificates",
+                ));
+            }
+            value.parse::<claviron::ssl::SubjectUri>().map_err(|_| {
+                Status::invalid_argument(
+                    "subject_uri must be an absolute ASCII URI",
+                )
+            })
+        })
+        .transpose()?;
     let name = identity(&request.common_name, kind)?;
     let mut aliases = vec![name.clone()];
     for alias in request.aliases {
@@ -378,6 +409,7 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
         validity_days: request.validity_days,
         kind,
         path_len,
+        subject_uri,
     })
 }
 
@@ -437,6 +469,9 @@ async fn persist(
 fn metadata(saved: HostedCertificate) -> CertificateInfo {
     let cert = saved.certificate;
     CertificateInfo {
+        subject_uris: claviron::ssl::peer::peer_identity(&cert.certs_der)
+            .map(|peer| peer.subject_uris)
+            .unwrap_or_default(),
         id: cert.id,
         issuer_id: cert.issuer_id,
         kind: match cert.kind {

@@ -36,6 +36,9 @@ message CreateCertificateRequest {
   optional uint32 ca_path_len = 5;
   // Omission selects the configured authority; otherwise a local_ca issuer name.
   optional string issuer = 6;
+  // Optional client-only application identity, encoded as a URI SAN.
+  // The issuer does not infer a user, namespace meaning, or permissions.
+  optional string subject_uri = 7;
 }
 
 message CertificateInfo {
@@ -48,6 +51,8 @@ message CertificateInfo {
   CertificateKind kind = 7;
   // Absent only for a self-signed root CA.
   optional int32 issuer_id = 8;
+  // URI SAN identities read from the actual signed certificate.
+  repeated string subject_uris = 9;
   // Intentionally no certificate, private key, bundle or filesystem path.
 }
 
