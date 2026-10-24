@@ -84,14 +84,28 @@ impl Session {
                 Err(Status::deadline_exceeded("gRPC admission timed out"))
             });
             if let Err(error) = &decision {
-                tracing::error!(
-                    service = %target.service,
-                    operation = %target.operation,
-                    client_cn,
-                    code = ?error.code(),
-                    error = %error.message(),
-                    "gRPC access policy rejected a TLS-authenticated peer"
-                );
+                match error.code() {
+                    tonic::Code::Unauthenticated | tonic::Code::PermissionDenied => {
+                        tracing::warn!(
+                            service = %target.service,
+                            operation = %target.operation,
+                            client_cn,
+                            code = ?error.code(),
+                            error = %error.message(),
+                            "gRPC access policy rejected a TLS-authenticated peer"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            service = %target.service,
+                            operation = %target.operation,
+                            client_cn,
+                            code = ?error.code(),
+                            error = %error.message(),
+                            "gRPC access policy admission failed"
+                        );
+                    }
+                }
             }
             decision
         }
