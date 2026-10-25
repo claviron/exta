@@ -47,9 +47,10 @@ message CreateCertificateRequest {
   // Optional client-only application identity, encoded as a URI SAN.
   // The issuer does not infer a user, namespace meaning, or permissions.
   optional string subject_uri = 7;
-  // Client-only, validated against the host's registered PermissionCatalog.
+  // Client-only, validated through the existing authorization manager when bound,
+  // otherwise through the issuer's explicitly configured definitions.
   // Omission preserves an unscoped credential; an empty message declares no permissions.
-  // Catalog membership does not authorize the caller to delegate a permission.
+  // Definition membership does not authorize the caller to delegate a permission.
   CertificatePermissions permissions = 8;
 }
 

@@ -270,17 +270,18 @@ GrpcAccessPolicy owns user binding and authorization; the issuer infers neither.
 
 Part of [Claviron Extra](../../README.md).
 
-### Certificate permission scopes
+### Certificate permissions
 
-The host may register `claviron::auth::permission::PermissionCatalog` in its runtime
-registry. Include `permission::GrpcAccess` if the application exposes that
-permission, and add its own definitions as needed. A custom enrollment handler can
-also pass an `Arc<PermissionCatalog>` to `MtlsManager::with_permissions`.
+Client issuance accepts an optional `CertificatePermissions` message. Management
+clients select permission records through the existing authorization list API.
+With `authorization` enabled and a `RolePermissionManager` bound, issuance and
+renewal revalidate each selected reference through that manager using the admitted
+application actor. There is no separate certificate permission list to maintain.
+User/role assignments are not changed.
 
-Client issuance accepts an optional `CertificatePermissions` message. Names must
-be registered in the host's catalog; malformed or unknown names are rejected
-before signing. Omission keeps an unscoped credential, while an explicitly empty
-message signs an empty scope. The response reports the scope from the certificate.
-Renewal checks that the original scope remains defined. No permission database is
-required by the catalog; the mTLS manager retains its existing hosting persistence.
-The catalog validates names, while the host authorizes delegation and service use.
+A custom issuer without a management provider can supply explicit
+`PermissionCatalog` definitions through `MtlsManager::with_permissions` or the
+runtime registry. Selected permissions fail closed without a definition source.
+Omission keeps an unscoped credential, while an explicitly empty message signs an
+empty scope. Responses read the declaration from the signed certificate. The host
+continues to own issuance authorization, delegation and service access policy.

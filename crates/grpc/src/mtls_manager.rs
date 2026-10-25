@@ -7,6 +7,13 @@
 use std::sync::Arc;
 
 use claviron::auth::permission::PermissionCatalog;
+#[cfg(feature = "authorization")]
+use claviron::auth::{
+    AnyAuthenticated,
+    authorization::{
+        ManagementError, RecordKey, Resource, RolePermissionManager,
+    },
+};
 use claviron::hosting::{
     CertificateKind, HostedCertificate, HostingError, HostingService,
     HostingStore, NewCertificate,
@@ -32,9 +39,59 @@ pub struct MtlsManager {
     server_id: Option<i32>,
     authority: Option<Arc<CertAuthority>>,
     permissions: Option<Arc<PermissionCatalog>>,
+    #[cfg(feature = "authorization")]
+    permission_manager: Option<Arc<dyn RolePermissionManager>>,
+    #[cfg(feature = "authorization")]
+    actor: Option<AnyAuthenticated>,
 }
 
 impl MtlsManager {
+    #[cfg(feature = "authorization")]
+    /// Use the application actor already admitted for this management request.
+    pub fn with_actor(
+        mut self,
+        actor: Option<AnyAuthenticated>,
+    ) -> Self {
+        self.actor = actor;
+        self
+    }
+
+    async fn permission_selection(
+        &self,
+        names: &[String],
+    ) -> Result<Arc<PermissionCatalog>, Status> {
+        #[cfg(feature = "authorization")]
+        if let Some(manager) = &self.permission_manager {
+            let actor = self.actor.as_ref().ok_or_else(|| {
+                Status::failed_precondition("certificate permissions require an application actor from GrpcAccessPolicy")
+            })?;
+            let mut selection = PermissionCatalog::new();
+            for name in names {
+                selection.register_name(name).map_err(|error| {
+                    Status::invalid_argument(error.to_string())
+                })?;
+                let key = RecordKey {
+                    resource: Resource::Permission,
+                    reference: name.clone(),
+                };
+                let record = manager
+                    .get(actor.as_ref(), key.clone())
+                    .await
+                    .map_err(permission_status)?;
+                if record.key != key {
+                    return Err(Status::invalid_argument(
+                        "selected permission identity does not match",
+                    ));
+                }
+            }
+            return Ok(Arc::new(selection));
+        }
+        self.permissions.clone().ok_or_else(|| {
+            Status::failed_precondition(
+                "certificate permission definitions are not configured",
+            )
+        })
+    }
     /// Revoke a stored certificate and disable it, retaining its first timestamp.
     /// No issuer ownership or signing key is required for this local DB decision.
     /// Store notifications refresh TLS snapshots after the committed mutation.
@@ -106,11 +163,11 @@ impl MtlsManager {
         )
         .map_err(|error| Status::failed_precondition(error.to_string()))?
         {
-            let catalog = self.permissions.as_ref().ok_or_else(|| {
-                Status::failed_precondition(
-                    "PermissionCatalog is not registered",
-                )
-            })?;
+            let names = scope
+                .iter()
+                .map(|name| name.as_str().to_owned())
+                .collect::<Vec<_>>();
+            let catalog = self.permission_selection(&names).await?;
             catalog.validate(scope.iter()).map_err(|error| {
                 Status::failed_precondition(error.to_string())
             })?;
@@ -205,10 +262,19 @@ impl MtlsManager {
         server_id: Option<i32>,
         authority: Option<Arc<CertAuthority>>,
     ) -> Self {
-        Self { store, server_id, authority, permissions: None }
+        Self {
+            store,
+            server_id,
+            authority,
+            permissions: None,
+            #[cfg(feature = "authorization")]
+            permission_manager: None,
+            #[cfg(feature = "authorization")]
+            actor: None,
+        }
     }
 
-    /// Use the same immutable catalog as the application's token issuers.
+    /// Explicit permission definitions for issuer-owned enrollment without a manager.
     pub fn with_permissions(
         mut self,
         catalog: Arc<PermissionCatalog>,
@@ -235,6 +301,11 @@ impl MtlsManager {
         );
         manager.permissions =
             state.registry_ref().resolve::<PermissionCatalog>();
+        #[cfg(feature = "authorization")]
+        {
+            manager.permission_manager =
+                state.registry_ref().resolve_dyn::<dyn RolePermissionManager>();
+        }
         Ok(manager)
     }
     /// Generate and atomically store a self-signed CA and its issuer identity.
@@ -295,13 +366,9 @@ impl MtlsManager {
             subject_uri,
             permissions,
         } = input(request)?;
-        // Check vocabulary before any DB lookup or signing work.
+        // Revalidate selected definitions before issuer lookup or signing.
         let catalog = if let Some(names) = &permissions {
-            let catalog = self.permissions.clone().ok_or_else(|| {
-                Status::failed_precondition(
-                    "PermissionCatalog is not registered",
-                )
-            })?;
+            let catalog = self.permission_selection(names).await?;
             catalog
                 .validate(names)
                 .map_err(|error| Status::invalid_argument(error.to_string()))?;
@@ -522,6 +589,22 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
         subject_uri,
         permissions: request.permissions.map(|scope| scope.names),
     })
+}
+
+#[cfg(feature = "authorization")]
+fn permission_status(error: ManagementError) -> Status {
+    let message = error.to_string();
+    match error {
+        ManagementError::NotFound => {
+            Status::invalid_argument("selected permission no longer exists")
+        }
+        ManagementError::Forbidden => Status::permission_denied(message),
+        ManagementError::Unsupported => Status::unimplemented(message),
+        ManagementError::Unavailable => Status::unavailable(message),
+        ManagementError::Conflict => Status::aborted(message),
+        ManagementError::SchemaChanged => Status::failed_precondition(message),
+        ManagementError::Validation(_) => Status::invalid_argument(message),
+    }
 }
 
 fn storage_status(error: HostingError) -> Status {
