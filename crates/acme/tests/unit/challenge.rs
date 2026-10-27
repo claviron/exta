@@ -177,5 +177,4 @@ async fn http01_request_rejects_traversal_and_cleans_up_errors_and_cancellation(
     }
 }
 
-#[path = "../support/issuer.rs"]
-mod issuer;
+use crate::issuer;

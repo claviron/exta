@@ -7,10 +7,64 @@ pub(super) struct Mock {
     pub entered: oneshot::Receiver<()>,
 }
 
+pub(super) struct Reply {
+    pub path: &'static str,
+    pub status: u16,
+    pub body: String,
+    pub headers: String,
+    pub hold: bool,
+}
+
+impl Reply {
+    pub fn new(
+        path: &'static str,
+        status: u16,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            path,
+            status,
+            body: body.into(),
+            headers: String::new(),
+            hold: false,
+        }
+    }
+
+    pub fn nonce() -> Self {
+        let mut reply = Self::new("/acme/new-nonce", 204, "");
+        reply.headers = "Replay-Nonce: test-nonce\r\n".into();
+        reply
+    }
+}
+
 pub(super) async fn start(
     token: &str,
     hold_challenge: bool,
 ) -> (reqwest::Client, Mock) {
+    let mut order = Reply::new(
+        "/acme/new-order",
+        201,
+        r#"{"authorizations":["http://issuer.test/auth"],"finalize":"http://issuer.test/finalize"}"#,
+    );
+    order.headers = "Location: http://issuer.test/order\r\n".into();
+    let auth = Reply::new("/auth", 200, serde_json::json!({"status":"pending", "challenges":[{"type":"http-01", "token":token, "url":"http://issuer.test/challenge"}]}).to_string());
+    let mut challenge =
+        Reply::new("/challenge", 200, r#"{"status":"invalid"}"#);
+    challenge.hold = hold_challenge;
+    scripted(vec![
+        Reply::nonce(),
+        order,
+        Reply::nonce(),
+        auth,
+        Reply::nonce(),
+        challenge,
+        Reply::nonce(),
+        Reply::new("/challenge", 200, r#"{"status":"invalid"}"#),
+    ])
+    .await
+}
+
+pub(super) async fn scripted(replies: Vec<Reply>) -> (reqwest::Client, Mock) {
     let listener =
         TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -18,13 +72,13 @@ pub(super) async fn start(
     // without requiring port 80 or involving DNS or a real certificate issuer.
     let client = reqwest::Client::builder()
         .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let token = token.to_owned();
     let (entered, receiver) = oneshot::channel();
     let task = tokio::spawn(async move {
         let mut entered = Some(entered);
-        loop {
+        for reply in replies {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut wire = Vec::new();
             let mut buffer = [0; 1024];
@@ -57,26 +111,63 @@ pub(super) async fn start(
                 .nth(1)
                 .unwrap();
             let path = url::Url::parse(target).unwrap();
-            let (body, extra) = match path.path() {
-                "/acme/new-nonce" => (String::new(), "Replay-Nonce: test-nonce\r\n"),
-                "/acme/new-order" => (
-                    r#"{"authorizations":["http://issuer.test/auth"],"finalize":"http://issuer.test/finalize"}"#.into(),
-                    "Location: http://issuer.test/order\r\n",
-                ),
-                "/auth" => (serde_json::json!({"status":"pending", "challenges":[{"type":"http-01", "token":token, "url":"http://issuer.test/challenge"}]}).to_string(), ""),
-                "/challenge" => {
-                    if let Some(entered) = entered.take() { let _ = entered.send(()); }
-                    if hold_challenge { std::future::pending::<()>().await; }
-                    (r#"{"status":"invalid"}"#.into(), "")
+            assert_eq!(path.path(), reply.path, "unexpected mock endpoint");
+            if path.path() == "/challenge" {
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
                 }
-                other => panic!("unexpected mock path {other}"),
-            };
+            }
+            if reply.hold {
+                std::future::pending::<()>().await;
+            }
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n{body}",
-                body.len()
+                "HTTP/1.1 {} Fixture\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{}\r\n{}",
+                reply.status,
+                reply.body.len(),
+                reply.headers,
+                reply.body,
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         }
     });
     (client, Mock { task, entered: receiver })
+}
+
+pub(super) fn order_replies(
+    body: &str,
+    finalize: bool,
+) -> Vec<Reply> {
+    let mut order = Reply::new(
+        "/acme/new-order",
+        201,
+        r#"{"authorizations":["http://issuer.test/auth"],"finalize":"http://issuer.test/finalize"}"#,
+    );
+    order.headers = "Location: http://issuer.test/order\r\n".into();
+    let auth = Reply::new(
+        "/auth",
+        200,
+        r#"{"status":"pending","challenges":[{"type":"http-01","token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","url":"http://issuer.test/challenge"}]}"#,
+    );
+    let mut replies = vec![
+        Reply::nonce(),
+        order,
+        Reply::nonce(),
+        auth,
+        Reply::nonce(),
+        Reply::new("/challenge", 200, "{}"),
+        Reply::nonce(),
+        Reply::new("/challenge", 200, r#"{"status":"valid"}"#),
+    ];
+    if finalize {
+        replies.extend([
+            Reply::nonce(),
+            Reply::new("/order", 200, r#"{"status":"ready"}"#),
+            Reply::nonce(),
+            Reply::new("/finalize", 200, "{}"),
+        ]);
+    }
+    replies.extend([Reply::nonce(), Reply::new("/order", 200,
+        r#"{"status":"valid","certificate":"http://issuer.test/certificate"}"#),
+        Reply::nonce(), Reply::new("/certificate", 200, body)]);
+    replies
 }

@@ -43,6 +43,11 @@ pub enum AcmeError {
     #[error("HTTP client error: {0}")]
     ClientError(#[from] reqwest::Error),
 
+    /// A completed HTTP exchange rejected by the CA, including its original
+    /// problem document or plain-text explanation.
+    #[error("ACME endpoint {url} returned HTTP {status}: {body}")]
+    HttpResponse { status: http::StatusCode, url: String, body: String },
+
     #[cfg(feature = "db")]
     #[error("database error: {0}")]
     Database(String),

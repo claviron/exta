@@ -11,6 +11,7 @@ use url::Url;
 use crate::AcmeError;
 use crate::clients::AcmeClient;
 use crate::clients::challenge::Challenge;
+use crate::clients::http::checked_response;
 use crate::cryptex::jwk::AcmeJwk;
 use crate::cryptex::signing::{sign_payload, thumbprint};
 
@@ -293,6 +294,7 @@ impl CertClient {
             .head(format!("{}/acme/new-nonce", self.base_url))
             .send()
             .await?;
+        let nonce_resp = checked_response(nonce_resp).await?;
 
         let nonce_hdr = nonce_resp
             .headers()
@@ -335,7 +337,7 @@ impl CertClient {
             .send()
             .await?;
 
-        Ok(response)
+        checked_response(response).await
     }
 }
 

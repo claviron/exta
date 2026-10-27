@@ -41,3 +41,26 @@ pub(crate) fn acme_client() -> Result<AcmeClient, AcmeError> {
     debug!("Creating new HTTP client for ACME");
     build_http_client()
 }
+
+/// Check status before reading success headers or parsing a success payload.
+/// Error bodies stay intact so callers retain ACME problem type, detail and
+/// subproblems, including a non-JSON response from an upstream proxy.
+pub(super) async fn checked_response(
+    response: reqwest::Response
+) -> Result<reqwest::Response, AcmeError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let mut url = response.url().clone();
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    let body = response.text().await.unwrap_or_else(|error| {
+        format!("Failed to read ACME error response body: {error}")
+    });
+    Err(AcmeError::HttpResponse { status, url: url.to_string(), body })
+}
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/response.rs"]
+mod tests;

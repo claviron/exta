@@ -107,6 +107,13 @@ The public modules separate protocol clients from higher-level operations:
 - `AcmeStore` owns account and attempt-log persistence; callers need not query
   its tables directly.
 
+Account and certificate clients check HTTP success before consuming response
+headers or payloads. A rejected response returns `AcmeError::HttpResponse` with
+the status, endpoint and original CA problem document or plain-text body.
+Database creation and renewal logs become successful only after certificate
+parsing and persistence complete; HTTP, parsing and storage failures are logged
+as failed attempts with their error details.
+
 With `server` + `tasks`, `acme_renew` scans due ACME-owned certificates and
 `acme_gc` removes stale challenge files. Configure renewal timing through
 Claviron's task system. Attempt logs are written before network issuance and

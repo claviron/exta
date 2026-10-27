@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::clients::{CertClient, acme_client};
+use crate::clients::{AcmeClient, CertClient, acme_client};
 use crate::cryptex::jwk::AcmeJwk;
 use crate::validate::validate_acme_url;
 use crate::{AcmeConfig, AcmeError, AcmeOperation, AcmeStore};
@@ -34,6 +34,27 @@ pub async fn add_cert_to_db(
     cn: &Sni,
     aliases: &[Sni],
     cfg: &AcmeConfig,
+) -> Result<AddCertificateResult, AcmeError> {
+    add_with_client(
+        acme_store,
+        hosting,
+        server_id,
+        cn,
+        aliases,
+        cfg,
+        acme_client,
+    )
+    .await
+}
+
+async fn add_with_client(
+    acme_store: &AcmeStore,
+    hosting: &HostingStore,
+    server_id: i32,
+    cn: &Sni,
+    aliases: &[Sni],
+    cfg: &AcmeConfig,
+    make_client: impl FnOnce() -> Result<AcmeClient, AcmeError>,
 ) -> Result<AddCertificateResult, AcmeError> {
     let start_time = Instant::now();
     if let Some(existing) = hosting
@@ -101,18 +122,52 @@ pub async fn add_cert_to_db(
         let organization = Organization::from_name(&account.organization);
         let csr =
             generate_server_csr(&private_key, cn.as_str(), Aliases::from(aliases), &organization)?;
-        let client = CertClient::with_client(acme_client()?, &account.private_key, &account.url)
+        let client = CertClient::with_client(make_client()?, &account.private_key, &account.url)
             .map_err(|error| AcmeError::ClientCreationFailed(error.to_string()))?;
         let jwk: AcmeJwk = serde_json::from_value(account.jwk.clone())
             .map_err(|error| AcmeError::from(format!("Invalid JWK JSON: {error}")))?;
         jwk.validate_key(&account.private_key, account.algorithm)?;
-        let pem = client.request_certificate(csr.der(), &jwk, cfg.challenges_dir()).await.map_err(
+        let fullchain_pem = client.request_certificate(csr.der(), &jwk, cfg.challenges_dir()).await.inspect_err(
             |error| {
                 error!(cn = %cn, error = ?error, "ACME create request failed");
-                AcmeError::CertificateFailed(format!("ACME request failed: {error:?}"))
             }
         )?;
-        Ok::<_, AcmeError>((account, private_key, pem))
+        let certs_der = concat_chain_bytes_from_pem(fullchain_pem.as_bytes())?;
+        let leaf = take_first_cert_from_der(&certs_der)?;
+        let expires_at = OffsetDateTime::from_unix_timestamp(
+            leaf.validity().not_after.to_datetime().unix_timestamp(),
+        )
+        .map_err(|_| AcmeError::from("Invalid expires_at timestamp"))?;
+        let alias_names =
+            aliases.iter().map(|alias| alias.key_string()).collect::<Vec<_>>();
+        let issuer = hosting
+            .ensure_acme_issuer(account.id)
+            .await
+            .map_err(|error| AcmeError::Database(error.to_string()))?;
+        let hosted = hosting
+            .insert_certificate(
+                NewCertificate {
+                    kind: claviron::hosting::CertificateKind::Server,
+                    issuer_id: Some(issuer.id),
+                    cn: cn.to_string(),
+                    certs_der,
+                    key_der: private_key.serialize_der(),
+                    expires_at,
+                    issued_at: OffsetDateTime::now_utc(),
+                    enabled: true,
+                },
+                &alias_names,
+                server_id,
+            )
+            .await
+            .map_err(|error| AcmeError::Database(error.to_string()))?;
+
+        info!(cn = %cn, certificate_id = hosted.certificate.id, "certificate persisted");
+        Ok::<_, AcmeError>(AddCertificateResult {
+            certificate: hosted.certificate,
+            content: fullchain_pem,
+            attached_existing: false,
+        })
     }
     .await;
     let duration = start_time.elapsed().as_secs() as i32;
@@ -125,44 +180,7 @@ pub async fn add_cert_to_db(
         failure.as_deref(),
     )
     .await;
-    let (account, private_key, fullchain_pem) = attempt?;
-
-    let certs_der = concat_chain_bytes_from_pem(fullchain_pem.as_bytes())?;
-    let leaf = take_first_cert_from_der(&certs_der)?;
-    let expires_at = OffsetDateTime::from_unix_timestamp(
-        leaf.validity().not_after.to_datetime().unix_timestamp(),
-    )
-    .map_err(|_| AcmeError::from("Invalid expires_at timestamp"))?;
-    let alias_names =
-        aliases.iter().map(|alias| alias.key_string()).collect::<Vec<_>>();
-    let issuer = hosting
-        .ensure_acme_issuer(account.id)
-        .await
-        .map_err(|error| AcmeError::Database(error.to_string()))?;
-    let hosted = hosting
-        .insert_certificate(
-            NewCertificate {
-                kind: claviron::hosting::CertificateKind::Server,
-                issuer_id: Some(issuer.id),
-                cn: cn.to_string(),
-                certs_der,
-                key_der: private_key.serialize_der(),
-                expires_at,
-                issued_at: OffsetDateTime::now_utc(),
-                enabled: true,
-            },
-            &alias_names,
-            server_id,
-        )
-        .await
-        .map_err(|error| AcmeError::Database(error.to_string()))?;
-
-    info!(cn = %cn, certificate_id = hosted.certificate.id, "certificate persisted");
-    Ok(AddCertificateResult {
-        certificate: hosted.certificate,
-        content: fullchain_pem,
-        attached_existing: false,
-    })
+    attempt
 }
 
 /// Renew a certificate already loaded from the hosting store.
@@ -172,6 +190,25 @@ pub async fn renew_cert_from_db(
     cfg: &AcmeConfig,
     hosted: HostedCertificate,
     enforce_throttle: bool,
+) -> Result<(Certificate, String), AcmeError> {
+    renew_with_client(
+        acme_store,
+        hosting,
+        cfg,
+        hosted,
+        enforce_throttle,
+        acme_client,
+    )
+    .await
+}
+
+async fn renew_with_client(
+    acme_store: &AcmeStore,
+    hosting: &HostingStore,
+    cfg: &AcmeConfig,
+    hosted: HostedCertificate,
+    enforce_throttle: bool,
+    make_client: impl FnOnce() -> Result<AcmeClient, AcmeError>,
 ) -> Result<(Certificate, String), AcmeError> {
     let start_time = Instant::now();
     let cert = hosted.certificate;
@@ -220,7 +257,7 @@ pub async fn renew_cert_from_db(
             &organization,
         )?;
         let client = CertClient::with_client(
-            acme_client()?,
+            make_client()?,
             &account.private_key,
             &account.url,
         )
@@ -230,14 +267,23 @@ pub async fn renew_cert_from_db(
                 AcmeError::from(format!("Invalid JWK JSON: {error}"))
             })?;
         jwk.validate_key(&account.private_key, account.algorithm)?;
-        client
+        let cert_pem = client
             .request_certificate(csr.der(), &jwk, cfg.challenges_dir())
+            .await?;
+        let certs_der = concat_chain_bytes_from_pem(cert_pem.as_bytes())?;
+        let leaf = take_first_cert_from_der(&certs_der)?;
+        let expires_at = OffsetDateTime::from_unix_timestamp(
+            leaf.validity().not_after.to_datetime().unix_timestamp(),
+        )
+        .map_err(|_| AcmeError::from("Invalid expires_at timestamp"))?;
+        let updated = hosting
+            .update_certificate_material(
+                cert.id, certs_der, key_der, expires_at,
+            )
             .await
-            .map_err(|error| {
-                AcmeError::CertificateFailed(format!(
-                    "ACME renewal failed: {error:?}"
-                ))
-            })
+            .map_err(|error| AcmeError::Database(error.to_string()))?;
+        info!(cn = %cert.cn, "certificate renewed");
+        Ok::<_, AcmeError>((updated.certificate, cert_pem))
     }
     .await;
     let duration = start_time.elapsed().as_secs() as i32;
@@ -250,20 +296,7 @@ pub async fn renew_cert_from_db(
         failure.as_deref(),
     )
     .await;
-    let cert_pem = attempt?;
-
-    let certs_der = concat_chain_bytes_from_pem(cert_pem.as_bytes())?;
-    let leaf = take_first_cert_from_der(&certs_der)?;
-    let expires_at = OffsetDateTime::from_unix_timestamp(
-        leaf.validity().not_after.to_datetime().unix_timestamp(),
-    )
-    .map_err(|_| AcmeError::from("Invalid expires_at timestamp"))?;
-    let updated = hosting
-        .update_certificate_material(cert.id, certs_der, key_der, expires_at)
-        .await
-        .map_err(|error| AcmeError::Database(error.to_string()))?;
-    info!(cn = %cert.cn, "certificate renewed");
-    Ok((updated.certificate, cert_pem))
+    attempt
 }
 
 /// Renew by CN, applying the configured due-date rule before network I/O.
@@ -362,3 +395,7 @@ async fn acme_account_id(
         .acme_account_id
         .ok_or_else(|| AcmeError::from("ACME issuer has no account"))
 }
+
+#[cfg(all(test, unix, feature = "sqlite"))]
+#[path = "../../tests/unit/issuance.rs"]
+mod tests;

@@ -21,3 +21,7 @@ pub use meta::*;
 pub use provider::{AcmeProvider, CONFIG_FILE, register};
 #[cfg(feature = "db")]
 pub use store::{AcmeAccount, AcmeOperation, AcmeStore, NewAcmeAccount};
+
+#[cfg(all(test, unix))]
+#[path = "../tests/support/issuer.rs"]
+mod issuer;

@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::AcmeError;
 use crate::clients::AcmeClient;
+use crate::clients::http::checked_response;
 use crate::cryptex::jwk;
 use crate::cryptex::signing::sign_payload;
 
@@ -49,13 +50,7 @@ impl AccountClient {
             .send()
             .await?;
 
-        if !directory_response.status().is_success() {
-            return Err(AcmeError::from(format!(
-                "Failed to retrieve directory status code: {} url: {}",
-                directory_response.status(),
-                base_url,
-            )));
-        }
+        let directory_response = checked_response(directory_response).await?;
         let directory_json: Value = directory_response.json().await?;
 
         let new_nonce_url = directory_json["newNonce"]
@@ -83,22 +78,13 @@ impl AccountClient {
                 jwk,
             )
             .await?;
-        if response.status().is_success() {
-            if let Some(location) = response.headers().get("Location") {
-                let account_url = location.to_str()?;
-                debug!("Account registered at url {}", account_url);
-                Ok(account_url.to_string())
-            } else {
-                Err(AcmeError::MissingLocationHeader)
-            }
-        } else {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            Err(AcmeError::RegistrationFailed(format!(
-                "Registration failed with status: {}. Details: {}",
-                status, text,
-            )))
-        }
+        let location = response
+            .headers()
+            .get("Location")
+            .ok_or(AcmeError::MissingLocationHeader)?;
+        let account_url = location.to_str()?;
+        debug!("Account registered at url {}", account_url);
+        Ok(account_url.to_string())
     }
 
     async fn send_signed_request(
@@ -110,6 +96,7 @@ impl AccountClient {
         jwk: &jwk::AcmeJwk,
     ) -> Result<reqwest::Response, AcmeError> {
         let nonce_resp = self.client.head(new_nonce_url).send().await?;
+        let nonce_resp = checked_response(nonce_resp).await?;
         let nonce_hdr = nonce_resp
             .headers()
             .get("Replay-Nonce")
@@ -162,6 +149,6 @@ impl AccountClient {
             .send()
             .await?;
 
-        Ok(response)
+        checked_response(response).await
     }
 }
