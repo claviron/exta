@@ -56,6 +56,9 @@ pub enum AcmeError {
     #[error("Invalid order status")]
     InvalidOrderStatus,
 
+    #[error("HTTP-01 challenge token must be nonempty unpadded base64url")]
+    InvalidChallengeToken,
+
     #[error("Request signing error: {0}")]
     SignRequest(String),
 

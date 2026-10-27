@@ -54,6 +54,9 @@ http.workspace = true
 getrandom.workspace = true
 url.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 serde_yaml.workspace = true
 tempfile = "3.27"

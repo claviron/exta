@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 use claviron::helpers::base64::base64_encode;
 use claviron::ssl::{Algorithm, Aliases, KeyString};
 use serde_json::json;
-use tokio::fs;
 use tokio::time::sleep;
 use tracing::{debug, error};
 use url::Url;
 
 use crate::AcmeError;
 use crate::clients::AcmeClient;
+use crate::clients::challenge::Challenge;
 use crate::cryptex::jwk::AcmeJwk;
 use crate::cryptex::signing::{sign_payload, thumbprint};
 
@@ -144,17 +144,12 @@ impl CertClient {
                 .as_str()
                 .ok_or("Challenge Token not found in response")?;
             let key_authorization = format!("{}.{}", token, thumbprint(jwk)?);
-            let challenge_path = challenge_dir.as_ref().join(token);
-
-            fs::write(&challenge_path, key_authorization).await.map_err(
-                |e| {
-                    AcmeError::io_error(
-                        "Failed to write challenge file",
-                        challenge_path,
-                        e,
-                    )
-                },
-            )?;
+            let _file = Challenge::create(
+                challenge_dir.as_ref(),
+                token,
+                key_authorization,
+            )
+            .await?;
 
             debug!("Waiting for challenge to be validated");
 

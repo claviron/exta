@@ -89,6 +89,14 @@ integration. The validating CA must be able to retrieve the token over public
 port 80 from that directory. Reachability pre-validation checks this path, not
 TLS installation or trust.
 
+HTTP-01 tokens are validated as nonempty, unpadded base64url names before file
+access ([RFC 8555 section 8.3](https://www.rfc-editor.org/rfc/rfc8555.html#section-8.3)).
+Challenge files are created exclusively relative to an opened directory handle;
+existing files, hard links and symlinks are rejected rather than overwritten.
+The request owns its challenge file and removes it when validation ends or the
+request is cancelled. Cleanup uses the same directory handle, so replacing a
+parent path cannot redirect it. Keep the challenge directory operator-owned.
+
 ## Operations and renewal
 
 The public modules separate protocol clients from higher-level operations:
