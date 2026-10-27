@@ -59,7 +59,17 @@ impl CertClient {
         key: &str,
         account_url: &str,
     ) -> Result<Self, AcmeError> {
-        let url = Url::parse(account_url).unwrap();
+        let url = Url::parse(account_url).map_err(|error| {
+            AcmeError::ClientCreationFailed(format!(
+                "Invalid ACME account URL: {error}"
+            ))
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
+            return Err(AcmeError::ClientCreationFailed(
+                "ACME account URL must use HTTP or HTTPS and include a host"
+                    .into(),
+            ));
+        }
         // Let URL serialization preserve non-default ports and bracketed IPv6
         // authorities while keeping the original account URL for the JWS kid.
         let base_url = url.origin().ascii_serialization();

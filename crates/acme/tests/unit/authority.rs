@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn acme_authority_rejects_invalid_account_urls_without_panicking() {
+    let http = AcmeClient::builder().no_proxy().build().unwrap();
+    for account in [
+        "",
+        "not-a-url",
+        "/acme/account/1",
+        "acme/account/1",
+        "//issuer.test/acme/account/1",
+        "http://",
+        "https://",
+        "https://?query",
+        "https://#fragment",
+        "http://[]/account",
+        "http://[2001:db8::1/account",
+        "https://issuer.test:invalid/account",
+        "https://issuer.test:65536/account",
+        "https://exa mple.test/account",
+        "mailto:operator@example.test",
+        "data:text/plain,account",
+        "file:///account",
+        "file://issuer.test/account",
+        "ftp://issuer.test/account",
+        "ws://issuer.test/account",
+        "wss://[2001:db8::1]:8443/account",
+        "about:blank",
+    ] {
+        assert!(
+            matches!(
+                CertClient::with_client(http.clone(), "", account),
+                Err(AcmeError::ClientCreationFailed(_))
+            ),
+            "accepted invalid account URL {account:?}"
+        );
+    }
+}
+
+#[test]
 fn acme_authority_preserves_ports_ipv6_and_the_account_binding() {
     let http = AcmeClient::builder().no_proxy().build().unwrap();
     for (account, origin) in [
@@ -9,6 +46,7 @@ fn acme_authority_preserves_ports_ipv6_and_the_account_binding() {
         ("https://issuer.test:443/acme/account/1", "https://issuer.test"),
         ("http://issuer.test:8080/acme/account/1", "http://issuer.test:8080"),
         ("https://issuer.test:8443/acme/account/1", "https://issuer.test:8443"),
+        ("HTTPS://ISSUER.TEST:8443/acme/account/1", "https://issuer.test:8443"),
         ("http://192.0.2.1:8080/acme/account/1", "http://192.0.2.1:8080"),
         ("http://[2001:db8::1]:80/acme/account/1", "http://[2001:db8::1]"),
         ("https://[2001:db8::1]:443/acme/account/1", "https://[2001:db8::1]"),

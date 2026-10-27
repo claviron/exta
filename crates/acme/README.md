@@ -107,7 +107,9 @@ The public modules separate protocol clients from higher-level operations:
 - `AcmeStore` owns account and attempt-log persistence; callers need not query
   its tables directly.
 
-`CertClient` preserves non-default ports and IPv6 authorities when deriving the
+`CertClient` rejects malformed or relative account URLs and requires HTTP/HTTPS
+with a host, returning `AcmeError::ClientCreationFailed` before network access.
+It preserves non-default ports and IPv6 authorities when deriving the
 issuer origin from the account URL. The original account URL remains unchanged
 as the JWS account binding (`kid`).
 
