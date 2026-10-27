@@ -75,8 +75,25 @@ pub(super) async fn scripted(replies: Vec<Reply>) -> (reqwest::Client, Mock) {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
+    serve(listener, client, replies)
+}
+
+pub(super) fn direct(
+    listener: TcpListener,
+    replies: Vec<Reply>,
+) -> (reqwest::Client, Mock) {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    serve(listener, client, replies)
+}
+
+fn serve(
+    listener: TcpListener,
+    client: reqwest::Client,
+    replies: Vec<Reply>,
+) -> (reqwest::Client, Mock) {
     let (entered, receiver) = oneshot::channel();
     let task = tokio::spawn(async move {
+        let base = url::Url::parse("http://issuer.test").unwrap();
         let mut entered = Some(entered);
         for reply in replies {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -110,7 +127,7 @@ pub(super) async fn scripted(replies: Vec<Reply>) -> (reqwest::Client, Mock) {
                 .split_whitespace()
                 .nth(1)
                 .unwrap();
-            let path = url::Url::parse(target).unwrap();
+            let path = base.join(target).unwrap();
             assert_eq!(path.path(), reply.path, "unexpected mock endpoint");
             if path.path() == "/challenge" {
                 if let Some(entered) = entered.take() {

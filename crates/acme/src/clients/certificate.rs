@@ -60,7 +60,9 @@ impl CertClient {
         account_url: &str,
     ) -> Result<Self, AcmeError> {
         let url = Url::parse(account_url).unwrap();
-        let base_url = format!("{}://{}", url.scheme(), url.host().unwrap());
+        // Let URL serialization preserve non-default ports and bracketed IPv6
+        // authorities while keeping the original account URL for the JWS kid.
+        let base_url = url.origin().ascii_serialization();
 
         Ok(Self {
             client,
@@ -345,3 +347,7 @@ impl CertClient {
 pub async fn sleep_for(seconds: u64) {
     sleep(Duration::from_secs(seconds)).await;
 }
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/authority.rs"]
+mod tests;
