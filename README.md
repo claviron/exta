@@ -72,3 +72,22 @@ credentials, TSIG secrets, and database backups remain operator-owned secrets.
 
 APIs and configuration may change between alpha releases. Backward compatibility
 is not guaranteed.
+
+## Independent package versions
+
+Each Extra crate owns its version in its package manifest. A release changes
+and publishes only the affected packages; their version numbers do not need to
+match each other or Claviron. This also means that a DNS-only change does not
+require publishing ACME, gRPC, domains, or the core runtime again.
+
+All Extra crates share the Claviron facade dependency declared in
+`workspace.dependencies`. Its version requirement describes API compatibility,
+not the Extra package version. Raise it only when a change requires a newer
+Claviron API or fix. Likewise, update an Extra-to-Extra dependency requirement
+only when the consumer needs a newer API or fix. Verify that the application's
+resolved dependency graph uses one compatible Claviron facade.
+
+During the alpha series, validate the selected package versions and feature
+combination together: an accepted Cargo version requirement alone does not
+guarantee API compatibility. A package that has already been published is
+immutable; changed contents require a new version of that package.
