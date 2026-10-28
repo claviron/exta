@@ -31,6 +31,8 @@ pub const CONFIG_FILE: &str = "dns.yaml";
 /// runtime reads the snapshot via `current()`; nobody else does file I/O.
 #[derive(Debug)]
 pub struct DnsConfigProvider {
+    #[cfg(feature = "metrics")]
+    pub(crate) metrics: Arc<crate::metrics::Store>,
     config_path: PathBuf,
     snapshot: ArcSwap<DnsConfig>,
     worker: bool,
@@ -46,6 +48,8 @@ impl DnsConfigProvider {
 
     pub fn empty(config_path: PathBuf) -> Self {
         Self {
+            #[cfg(feature = "metrics")]
+            metrics: Arc::new(crate::metrics::Store::default()),
             config_path,
             snapshot: ArcSwap::from_pointee(DnsConfig::default()),
             worker: false,
@@ -71,6 +75,8 @@ impl DnsConfigProvider {
         config: &DnsConfig,
     ) {
         self.snapshot.store(Arc::new(config.clone()));
+        #[cfg(feature = "metrics")]
+        self.metrics.configure(config.enabled, config.metrics.clone());
         if self.worker {
             tracing::debug!(
                 "📦 DnsConfigProvider applied {}",
@@ -127,6 +133,10 @@ impl Configurable for DnsConfigProvider {
         &self,
         config: &DnsConfig,
     ) -> congif::Result<()> {
+        #[cfg(feature = "metrics")]
+        if let Some(policy) = &config.metrics {
+            policy.validate().map_err(congif::Error::invalid)?;
+        }
         if config.enabled {
             config
                 .dispatch
@@ -182,6 +192,10 @@ impl Reloadable<AppState> for DnsConfigProvider {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct DnsConfig {
+    /// Optional authoritative DNS collection; timing is explicitly configured.
+    #[cfg(feature = "metrics")]
+    #[serde(default)]
+    pub metrics: Option<crate::metrics::MetricsConfig>,
     #[serde(default)]
     pub enabled: bool,
     /// Process placement of the UDP/TCP listener, not the DNS snapshot or DoH.
@@ -339,6 +353,8 @@ pub struct DohConfig {
 impl Default for DnsConfig {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "metrics")]
+            metrics: None,
             enabled: false,
             scope: Scope::Worker,
             dispatch: Dispatch::Each,

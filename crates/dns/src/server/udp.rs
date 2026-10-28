@@ -11,6 +11,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
+use crate::observation::{Failure, Observation, Transport};
 use crate::providers::{DnsHandler, DnsProvider};
 
 /// Bind and serve the UDP DNS listener using the live `DnsProvider`.
@@ -76,11 +77,13 @@ pub(crate) async fn serve_udp(
         };
 
         debug!("Received {} bytes from {}", len, src_addr);
+        let mut observation = Observation::begin(&provider, Transport::Udp);
 
         let query = match Message::from_bytes(&buf[..len]) {
             Ok(msg) => msg,
             Err(e) => {
                 warn!("Failed to parse DNS query from {}: {}", src_addr, e);
+                observation.fail(Failure::Malformed);
                 continue;
             }
         };
@@ -88,14 +91,17 @@ pub(crate) async fn serve_udp(
         // QR distinguishes questions from answers; a response may still
         // carry OpCode::Query. Never answer a reply, including our own.
         if query.metadata.message_type != MessageType::Query {
+            observation.fail(Failure::ResponsePacket);
             tracing::trace!(%src_addr, "Ignoring DNS response on query listener");
             continue;
         }
+        observation.query(&query);
 
         let handler = match provider.handler() {
             Ok(h) => h,
             Err(e) => {
                 warn!("DNS query from {} dropped: {}", src_addr, e);
+                observation.fail(Failure::Unavailable);
                 continue;
             }
         };
@@ -104,7 +110,8 @@ pub(crate) async fn serve_udp(
 
         requests.spawn(async move {
             if let Err(e) =
-                handle_dns_query(handler, socket, query, src_addr).await
+                handle_dns_query(handler, socket, query, src_addr, observation)
+                    .await
             {
                 error!("Failed to handle DNS query from {}: {}", src_addr, e);
             }
@@ -126,20 +133,30 @@ async fn handle_dns_query(
     socket: Arc<UdpSocket>,
     query: Message,
     src_addr: SocketAddr,
+    observation: Observation,
 ) -> Result<()> {
-    let response = handler.handle_query(query).await?;
+    let response = match handler.handle_query(query).await {
+        Ok(response) => response,
+        Err(error) => {
+            observation.fail(Failure::Processing);
+            return Err(error);
+        }
+    };
 
     let response_bytes = match response.to_bytes() {
         Ok(bytes) => bytes,
         Err(e) => {
             error!("Failed to serialize DNS response: {}", e);
+            observation.fail(Failure::Encode);
             return Ok(());
         }
     };
 
-    socket.send_to(&response_bytes, src_addr).await.map_err(|e| {
-        RegistryError::msg(format!("DNS send_to {src_addr}: {e}"))
-    })?;
+    if let Err(e) = socket.send_to(&response_bytes, src_addr).await {
+        observation.fail(Failure::Write);
+        return Err(RegistryError::msg(format!("DNS send_to {src_addr}: {e}")));
+    }
+    observation.sent(response.metadata.response_code);
     debug!("Sent {} bytes response to {}", response_bytes.len(), src_addr);
 
     Ok(())
