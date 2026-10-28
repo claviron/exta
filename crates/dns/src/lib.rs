@@ -16,6 +16,13 @@ pub mod management;
 #[cfg(feature = "service")]
 pub mod providers;
 
+#[cfg(feature = "metrics")]
+mod metrics;
+#[cfg(feature = "service")]
+mod observation;
+#[cfg(feature = "metrics")]
+pub use metrics::MetricsConfig;
+
 #[cfg(feature = "server")]
 pub mod server;
 
@@ -53,6 +60,9 @@ pub fn register(
 
     DnsConfigProvider::register(state)?;
     DnsProvider::register(state)?;
+
+    #[cfg(feature = "metrics")]
+    metrics::register(state)?;
 
     #[cfg(feature = "upstream")]
     {

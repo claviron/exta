@@ -75,7 +75,7 @@ impl DnsProvider {
         Ok(store)
     }
 
-    fn cfg_provider(&self) -> &DnsConfigProvider {
+    pub(crate) fn cfg_provider(&self) -> &DnsConfigProvider {
         self.config_provider
             .get()
             .expect("DnsProvider is registered with its DnsConfigProvider")

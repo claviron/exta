@@ -28,6 +28,7 @@ This is not a public recursive resolver. Queries outside owned zones are refused
 | `sqlite` | SQLite on the hosting DB profile and committed-write fleet events; implies `service`. |
 | `upstream` | Bind the snapshot as the upstream resolver; implies `service` and the facade's `upstream` capability. |
 | `doh` | `service` plus an exclusive Edge `/dns-query` binding and TLS integration. Does not itself select the UDP/TCP listener. |
+| `metrics` | `service` plus authoritative DNS observations and the existing Claviron metrics registry. No exporter listener is created. |
 
 `server` does not select a database backend. Enable `postgres` or `sqlite` to
 match `db.yaml`'s `hosting:` profile. Without an explicit profile, hosting selects
@@ -112,6 +113,71 @@ bound by default. Enable `upstream` to register it automatically, with no
 fallthrough: names outside this service's zones fail with `NxDomain`, never a
 system DNS query. Applications needing a custom fallthrough can leave that
 feature off and bind `DnsResolverFactory` themselves.
+
+## Authoritative DNS metrics
+
+The optional `metrics` feature is available in the development source; it is
+not part of the published alpha.23 package. Select it on `claviron-dns` in an
+application built from that source. Claviron does not depend on Extra, so its
+facade feature cannot implicitly enable an Extra crate's instrumentation.
+The application keeps its existing protected metrics endpoint.
+
+Collection is disabled without a `metrics` section in `dns.yaml`:
+
+```yaml
+metrics:
+  enabled: true
+  publish_interval: 1s
+  max_age: 5s
+```
+
+Both durations are explicit operator policy, not hidden fallback values.
+`publish_interval` must be positive; `max_age` must be a whole number of seconds
+and at least the publication interval. The example uses the same 1s/5s policy
+as the existing HTTP metrics configuration. Applying configuration updates
+collection directly; the publisher waits for a configuration notification when
+disabled and performs no periodic work. No DNS samples are exported while
+collection or DNS itself is disabled. Already admitted observations finish
+under their original collection decision. Counters survive toggling collection
+within a process, and reset when that process restarts.
+
+| Metric | Type / unit | Labels | Counts |
+| --- | --- | --- | --- |
+| `claviron_dns_requests_total` | Counter | `transport` | UDP datagrams received, TCP frames after their length header is read, or requests entering the DoH handler. |
+| `claviron_dns_queries_total` | Counter | `transport`, `qtype` | Successfully decoded query messages, classified by the first question. A message with no question uses `NONE`. Response packets and malformed wire input are excluded. |
+| `claviron_dns_responses_total` | Counter | `transport`, `rcode` | Successful UDP send, complete TCP frame write, or handoff of a DoH DNS response to the HTTP layer. |
+| `claviron_dns_failures_total` | Counter | `transport`, `reason` | One terminal failure instead of a successful response handoff. |
+| `claviron_dns_request_duration_seconds` | Summary, seconds | `transport` | Sum and count, without quantiles, from admission until successful handoff, failure or cancellation. |
+
+Transport labels are `udp`, `tcp`, `doh`. Query types are `A`, `AAAA`, `CNAME`,
+`MX`, `NS`, `TXT`, `SOA`, `PTR`, `SRV`, `CAA`, `AXFR`, `IXFR`, `ANY`, `OTHER`,
+`NONE`. Response codes are `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`,
+`REFUSED`, `OTHER`. Failure reasons are `malformed`, `response_packet`,
+`unavailable`, `processing`, `encode`, `write`, `read`, `cancelled`, `method`.
+No query name, client address, zone name or arbitrary error text becomes a label.
+
+Unsupported DNS operations that produce NOTIMP are responses, not processing
+failures. A response whose write fails increments only the `write` failure,
+never the response counter. Malformed UDP packets and ignored response packets
+are failures without a DNS reply. TCP connection acceptance, clean EOF between
+frames, partial length headers and socket receive errors before admission are
+not requests. HTTP errors in DoH count as failures; its response counter means
+handoff, not confirmed delivery to a client. Later HTTP write failures belong
+to HTTP metrics. These counters are separate from outbound resolver metrics.
+
+Standalone exposition reads the local snapshot. In fleet mode, every process
+publishes its own cumulative snapshot to the DNS-owned Orbit ring, including a
+master if DNS is configured to run there. Any exporter merges the latest fresh
+snapshot per node; it never adds its local counters on top of its published
+snapshot. Labels are preserved in both modes. A graceful shutdown or disable
+publishes a tombstone. A crash expires after `max_age`; a restarted node's first
+snapshot replaces its previous lifetime. Fleet totals can therefore decrease
+when a node resets or expires; they are a live-process cumulative view, not
+durable fleet accounting. Scrape one fleet endpoint, not every worker and sum.
+
+The fixed snapshot is 827 bytes on physical kind `190`, using the existing
+Orbit snapshot scan capacity. The canonical allocation is recorded in
+Claviron's SHM kind index. Changing this schema requires a new physical kind.
 
 ## Transfer and protocol boundaries
 
