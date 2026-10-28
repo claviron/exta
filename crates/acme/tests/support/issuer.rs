@@ -129,10 +129,10 @@ fn serve(
                 .unwrap();
             let path = base.join(target).unwrap();
             assert_eq!(path.path(), reply.path, "unexpected mock endpoint");
-            if path.path() == "/challenge" {
-                if let Some(entered) = entered.take() {
-                    let _ = entered.send(());
-                }
+            if path.path() == "/challenge"
+                && let Some(entered) = entered.take()
+            {
+                let _ = entered.send(());
             }
             if reply.hold {
                 std::future::pending::<()>().await;
