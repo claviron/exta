@@ -93,9 +93,10 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps> for DnsServer {
         if !provider.config_snapshot().enabled {
             return Ok(());
         }
-        let address = provider.config_snapshot().address;
+        let config = provider.config_snapshot();
+        let address = config.address;
         let udp = super::udp::bind_udp(address)?;
-        let tcp = super::tcp::bind_tcp(address).await?;
+        let tcp = super::tcp::bind_tcp(address, config.tcp_backlog).await?;
         // Bound: the kernel queues connections from here on. Say so, so
         // the authority can announce the zones.
         super::announce::listening(&state).await;

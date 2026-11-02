@@ -320,7 +320,7 @@ impl claviron::edge::HostBindingProvider for DnsProvider {
         use claviron::edge::RouteBinding;
 
         let provider = Arc::new(self.clone());
-        Ok(Some(RouteBinding::Standalone(Arc::new(move |_state: AppState| {
+        Ok(Some(RouteBinding::Axum(Arc::new(move |_state: AppState| {
             Router::new()
                 .route("/dns-query", any(crate::doh::handle_doh_request))
                 .layer(Extension(provider.clone()))

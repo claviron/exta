@@ -828,7 +828,7 @@ async fn management_single_tonic_service_routes_both_capabilities() {
 #[tokio::test]
 async fn management_gateway_supplies_the_policy_bound_actor_once() {
     use crate::access::{AccessError, GrpcAccessPolicy};
-    use claviron::edge::BypassHandler;
+    use claviron::edge::OtherHandler;
     use claviron::http::ext::{
         ClientAuthStatus, ConnCtx, TlsClientCertInfo, TlsInfo,
     };
@@ -861,7 +861,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
     let routes =
         tonic::service::Routes::new(create_service(service.state.clone()))
             .prepare();
-    let handler = super::super::bypass::ManagementGrpcHandler::with_routes(
+    let handler = super::super::other::ManagementGrpcHandler::with_routes(
         routes,
         Arc::new(tokio::sync::Semaphore::new(1)),
         &super::super::config::GrpcConfig::default(),

@@ -26,18 +26,26 @@ pub async fn start_dns_tcp_server(
     provider: Arc<DnsProvider>,
     context: RunContext,
 ) -> Result<()> {
-    let listener = bind_tcp(provider.config_snapshot().address).await?;
+    let config = provider.config_snapshot();
+    let listener = bind_tcp(config.address, config.tcp_backlog).await?;
     serve_tcp(provider, listener, context).await
 }
 
 /// Bind and listen, shared by every process of the fleet. From here on the
 /// kernel queues connections, so a secondary connecting before the accept
 /// loop runs waits instead of being refused.
-pub(crate) async fn bind_tcp(listen_addr: SocketAddr) -> Result<TcpListener> {
+pub(crate) async fn bind_tcp(
+    listen_addr: SocketAddr,
+    backlog: std::num::NonZeroU32,
+) -> Result<TcpListener> {
     use claviron::sys::net::{PortSharing, create_tcp_listener};
-    create_tcp_listener(listen_addr, PortSharing::Shared).await.map_err(|e| {
-        RegistryError::msg(format!("DNS TCP bind {listen_addr} failed: {e}"))
-    })
+    create_tcp_listener(listen_addr, PortSharing::Shared, backlog)
+        .await
+        .map_err(|e| {
+            RegistryError::msg(format!(
+                "DNS TCP bind {listen_addr} failed: {e}"
+            ))
+        })
 }
 
 /// Accept and serve connections until the generation ends.

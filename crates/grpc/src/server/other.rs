@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use claviron::edge::BypassHandler;
+use claviron::edge::OtherHandler;
 use claviron::http::ext::ConnCtx;
 use claviron::http::{RouteBody, RouteFuture, RouteResponse, boxed_body};
 use claviron::runtime::AppState;
@@ -44,7 +44,7 @@ impl ManagementGrpcHandler {
     }
 }
 
-impl BypassHandler for ManagementGrpcHandler {
+impl OtherHandler for ManagementGrpcHandler {
     fn name(&self) -> &'static str {
         "management_grpc"
     }

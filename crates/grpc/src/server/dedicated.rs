@@ -9,7 +9,7 @@ use std::task::Poll;
 
 use async_trait::async_trait;
 use claviron::edge::transport::VhostTable;
-use claviron::edge::{BypassHandler, Host, HttpConfigProvider, VhostResolver};
+use claviron::edge::{Host, HttpConfigProvider, OtherHandler, VhostResolver};
 use claviron::http::ext::{
     ClientAuthStatus, ConnCtx, TlsClientCertInfo, TlsInfo,
 };
@@ -39,8 +39,8 @@ use tokio_rustls::LazyConfigAcceptor;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::bypass::ManagementGrpcHandler;
 use super::config::{GrpcConfig, ListenerConfig, binds_overlap};
+use super::other::ManagementGrpcHandler;
 use super::provider::GrpcServiceProvider;
 use super::services::ManagementTransport;
 
@@ -186,13 +186,13 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps> for GrpcListener {
         let mut listeners = Vec::with_capacity(policy.listen.len());
         for address in &policy.listen {
             listeners.push(
-                create_tcp_listener(*address, sharing).await.map_err(
-                    |error| {
+                create_tcp_listener(*address, sharing, policy.tcp.backlog)
+                    .await
+                    .map_err(|error| {
                         Error::msg(format!(
                             "gRPC dedicated bind {address}: {error}"
                         ))
-                    },
-                )?,
+                    })?,
             );
         }
         let permits = Arc::new(Semaphore::new(policy.max_connections));

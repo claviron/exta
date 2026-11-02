@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use claviron::edge::{
-    BypassService, Host, HostBindingProvider, HostConfig, RouteBinding,
+    Host, HostBindingProvider, HostConfig, OtherService, RouteBinding,
 };
 use claviron::runtime::congif::{
     self, ConfigFile, ConfigObserver, Configurable,
@@ -14,9 +14,9 @@ use claviron::runtime::registry::{
 use claviron::runtime::{AppState, Register};
 use tokio::sync::Semaphore;
 
-use super::bypass::ManagementGrpcHandler;
 use super::config::{CONFIG_FILE, GrpcConfig};
 use super::dedicated::GrpcListener;
+use super::other::ManagementGrpcHandler;
 
 /// The owner of `grpc.yaml`: binds the management service to the vhost keys the
 /// file names. Registered in every process; without the file the service
@@ -203,10 +203,10 @@ impl HostBindingProvider for GrpcServiceProvider {
                         || Error::msg("GrpcServiceProvider is not registered"),
                     )?;
                 let handler = service.handler(state, &cfg, host_key.clone())?;
-                Ok(BypassService::Handler(Arc::new(handler)))
+                Ok(OtherService::new(handler))
             },
         );
 
-        Ok(Some(RouteBinding::Bypass(factory)))
+        Ok(Some(RouteBinding::Other(factory)))
     }
 }

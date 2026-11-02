@@ -38,8 +38,8 @@ match `db.yaml`'s `hosting:` profile. Without an explicit profile, hosting selec
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.23", default-features = false, features = ["server", "postgres"] }
-claviron-dns = { version = "0.2.0-alpha.23", default-features = false, features = ["server", "postgres"] }
+claviron = { version = "0.2.0-alpha.24", default-features = false, features = ["server", "postgres"] }
+claviron-dns = { version = "0.2.0-alpha.24", default-features = false, features = ["server", "postgres"] }
 ```
 
 ```rust
@@ -68,6 +68,7 @@ absent file leaves DNS disabled.
 ```yaml
 enabled: true
 address: 127.0.0.1:5353
+tcp_backlog: 1024
 scope: workers
 dispatch: each
 ```
@@ -116,9 +117,8 @@ feature off and bind `DnsResolverFactory` themselves.
 
 ## Authoritative DNS metrics
 
-The optional `metrics` feature is available in the development source; it is
-not part of the published alpha.23 package. Select it on `claviron-dns` in an
-application built from that source. Claviron does not depend on Extra, so its
+The optional `metrics` feature is available from alpha.24. Select it on
+`claviron-dns` in the application manifest. Claviron does not depend on Extra, so its
 facade feature cannot implicitly enable an Extra crate's instrumentation.
 The application keeps its existing protected metrics endpoint.
 

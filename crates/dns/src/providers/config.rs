@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -137,6 +138,11 @@ impl Configurable for DnsConfigProvider {
         if let Some(policy) = &config.metrics {
             policy.validate().map_err(congif::Error::invalid)?;
         }
+        if i32::try_from(config.tcp_backlog.get()).is_err() {
+            return Err(congif::Error::invalid(
+                "dns.tcp_backlog must be at most 2147483647",
+            ));
+        }
         if config.enabled {
             config
                 .dispatch
@@ -212,6 +218,9 @@ pub struct DnsConfig {
         deserialize_with = "deserialize_bind_address"
     )]
     pub address: SocketAddr,
+    /// Pending TCP connections per listener; the OS may cap this queue.
+    #[serde(default = "default_tcp_backlog")]
+    pub tcp_backlog: NonZeroU32,
     /// Optional HTTPS endpoint. Presence enables DoH for exactly one
     /// canonical vhost; the host must exist and have an SNI certificate.
     #[cfg(feature = "doh")]
@@ -360,12 +369,18 @@ impl Default for DnsConfig {
             dispatch: Dispatch::Each,
             dispatch_policy: None,
             address: default_bind_address(),
+            tcp_backlog: default_tcp_backlog(),
             #[cfg(feature = "doh")]
             doh: None,
             tsig_keys: BTreeMap::new(),
             secondaries: Vec::new(),
         }
     }
+}
+
+fn default_tcp_backlog() -> NonZeroU32 {
+    // Preserve the socket helper's former queue size as an explicit DNS setting.
+    NonZeroU32::new(1024).expect("positive TCP backlog")
 }
 
 fn default_tsig_fudge() -> u16 {
@@ -375,6 +390,10 @@ fn default_tsig_fudge() -> u16 {
 fn default_bind_address() -> SocketAddr {
     "0.0.0.0:53".parse().unwrap()
 }
+
+#[cfg(test)]
+#[path = "../../tests/tcp_config.rs"]
+mod tcp_config_tests;
 
 #[cfg(all(test, feature = "doh"))]
 mod tests {

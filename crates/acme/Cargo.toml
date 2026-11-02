@@ -1,6 +1,6 @@
 [package]
 name = "claviron-acme"
-version = "0.2.0-alpha.23"
+version = "0.2.0-alpha.24"
 publish.workspace = true
 license.workspace = true
 repository.workspace = true

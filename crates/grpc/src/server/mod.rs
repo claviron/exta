@@ -3,7 +3,7 @@ pub(crate) mod access;
 pub(crate) mod acme;
 pub(crate) mod aliases;
 pub(crate) mod applications;
-pub(crate) mod bypass;
+pub(crate) mod other;
 pub(crate) mod config;
 pub(crate) mod control;
 pub(crate) mod dedicated;

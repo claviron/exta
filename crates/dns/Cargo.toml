@@ -1,6 +1,6 @@
 [package]
 name = "claviron-dns"
-version = "0.2.0-alpha.23"
+version = "0.2.0-alpha.24"
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -46,6 +46,7 @@ server = [
 doh = [
     "service",
     "claviron/edge",
+    "claviron/axum",
     "claviron/tls",
     "dep:axum",
     "dep:http",
