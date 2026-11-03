@@ -47,7 +47,7 @@ pub async fn validate_acme_url(
     let random_string = generators::random_alphanum(16);
 
     // Create a unique, tokenized filename and write the token as content
-    let fname = format!("acme-pre-validate-{}.txt", random_string);
+    let fname = format!("acme-pre-validate-{}", random_string);
     let challenge_file_path = challenges_dir.join(&fname);
     fs::write(&challenge_file_path, &random_string).map_err(|e| {
         AcmeError::io_error(

@@ -37,7 +37,10 @@ pub struct AcmeConfig {
     base_dir: PathBuf,
     #[serde(default = "default_pkg_name", alias = "account")]
     default_account: String,
+    #[serde(default)]
     challenges_dir: PathBuf,
+    #[serde(default)]
+    pub http01: Option<Http01Config>,
     production_url: String,
     staging_url: String,
     organization: Organization,
@@ -55,6 +58,33 @@ pub struct AcmeConfig {
     pub throttle_window: Duration,
     #[serde(default = "default_max_attempts_per_cn", alias = "max_attempts")]
     pub max_attempts_per_cn: u8,
+}
+
+/// HTTP-01 is absent/off, enabled for every host, or scoped explicitly.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Http01Config {
+    Enabled(bool),
+    Scoped { hosts: Http01Hosts },
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum Http01Hosts {
+    Any(Http01Any),
+    Named(Vec<Box<str>>),
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Http01Any {
+    Any,
+}
+
+impl Http01Config {
+    pub fn enabled(&self) -> bool {
+        !matches!(self, Self::Enabled(false))
+    }
 }
 
 fn default_rate_limit_window() -> Duration {

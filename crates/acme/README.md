@@ -83,11 +83,31 @@ max_attempts_per_cn: 3
 Paths are relative to the application working directory. `renew_before` is in
 days. These values are an example deployment policy, not a claim about CA quotas.
 
-For HTTP-01, enable Claviron's `http01` feature and ACME handling on the selected
-cleartext listener. The provider publishes its challenge directory to the HTTP
-integration. The validating CA must be able to retrieve the token over public
-port 80 from that directory. Reachability pre-validation checks this path, not
-TLS installation or trust.
+Enable this crate's `http01` feature to contribute native HTTP-01 routes through
+Edge's `Routable` API. This does not install a listener or an Axum router.
+
+```yaml
+http01:
+  hosts: any
+```
+
+Use `hosts: [example.com, example.net]` to select canonical host keys. `http01:
+true` also selects every declared host; `false` or omission contributes no layer.
+Host and protocol matching happen at boot/reload. `match_protocol` selects only
+plain HTTP; HTTPS and QUIC plans contain no HTTP-01 action. Selected hosts share
+one prepared layer; request processing reaches it after normal host
+access/quota/body policies.
+Undefined hosts remain unresolved. Public port-80 reachability and the host's
+cleartext policy remain the application's responsibility.
+
+`http01::Http01Storage` supplies raw bytes for live tokens. Bind a concrete
+implementation through the runtime registry before host preparation to use a
+cache, database or another backend. That implementation owns expiry and
+cross-worker visibility. The reader performs no fallback lookup after a storage
+miss. Without a binding, `challenges_dir` explicitly selects the existing file
+storage; an empty path is an error when HTTP-01 is enabled. Custom storage needs
+no challenge directory. Publishers must populate the same backend; the existing
+file issuance helpers still write challenge files.
 
 HTTP-01 tokens are validated as nonempty, unpadded base64url names before file
 access ([RFC 8555 section 8.3](https://www.rfc-editor.org/rfc/rfc8555.html#section-8.3)).

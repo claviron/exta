@@ -34,6 +34,7 @@ serde_yaml = "0.9"
 # ── HTTP core ────────────────────────────────────────────────────────
 bytes = "1.11"
 http = "1.5"
+http-body = "1"
 http-body-util = "0.1"
 
 # ── Web framework (axum + tower) ─────────────────────────────────────
@@ -76,4 +77,4 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # ── Claviron facade ──────────────────────────────────────────────────
-claviron = { version = "0.2.0-alpha.24", default-features = false }
+claviron = { version = "0.2.0-alpha.24", path = "../claviron", default-features = false }

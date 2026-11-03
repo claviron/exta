@@ -14,6 +14,7 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = []
+http01 = ["server", "claviron/edge", "dep:bytes"]
 db = ["dep:sqlx", "claviron/hosting"]
 postgres = ["db", "claviron/postgres"]
 # ACME accounts and logs in the SQLite file `db.yaml`'s `hosting:` names.
@@ -51,6 +52,7 @@ time.workspace = true
 serde.workspace = true
 
 http.workspace = true
+bytes = { workspace = true, optional = true }
 getrandom.workspace = true
 url.workspace = true
 
@@ -59,4 +61,6 @@ rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 serde_yaml.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 tempfile = "3.27"

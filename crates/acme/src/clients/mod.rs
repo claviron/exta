@@ -7,3 +7,6 @@ pub(crate) mod http;
 pub use account::*;
 pub use certificate::*;
 pub(crate) use http::acme_client;
+
+#[cfg(feature = "http01")]
+pub(crate) use challenge::valid_token;

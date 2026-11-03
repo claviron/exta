@@ -20,11 +20,7 @@ impl Challenge {
     ) -> Result<Self, AcmeError> {
         // RFC 8555 section 8.3: base64url alphabet, without padding. In
         // particular, no path separators, dots, percent escapes or NULs.
-        if token.is_empty()
-            || !token.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-            })
-        {
+        if !valid_token(token) {
             return Err(AcmeError::InvalidChallengeToken);
         }
 
@@ -132,3 +128,10 @@ impl Drop for Challenge {
 #[cfg(all(test, unix))]
 #[path = "../../tests/unit/challenge.rs"]
 mod tests;
+
+pub(crate) fn valid_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+        })
+}

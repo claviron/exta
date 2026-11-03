@@ -6,14 +6,13 @@
 //! it is prepared before boot and in the reload batch, applied here through
 //! `configure`, and followed through `ConfigObserver` when the source is
 //! watched. An absent file is the "ACME off" declaration: the snapshot is
-//! `None` and the HTTP-01 directory publishes nothing.
+//! `None`; no HTTP-01 contribution is installed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use claviron::http::acme::Http01ChallengeDirectory;
 use claviron::runtime::congif::{
     self, ConfigFile, ConfigObserver, Configurable,
 };
@@ -29,19 +28,19 @@ pub const CONFIG_FILE: &str = "acme.yaml";
 pub struct AcmeProvider {
     config_path: PathBuf,
     snapshot: ArcSwapOption<AcmeConfig>,
-    http01_directory: Arc<Http01ChallengeDirectory>,
+    #[cfg(feature = "http01")]
+    pub(crate) http01:
+        std::sync::Mutex<Option<Arc<crate::http01::Http01Layer>>>,
     worker: bool,
 }
 
 impl AcmeProvider {
-    pub fn empty(
-        config_path: PathBuf,
-        http01_directory: Arc<Http01ChallengeDirectory>,
-    ) -> Self {
+    pub fn empty(config_path: PathBuf) -> Self {
         Self {
             config_path,
             snapshot: ArcSwapOption::empty(),
-            http01_directory,
+            #[cfg(feature = "http01")]
+            http01: std::sync::Mutex::default(),
             worker: false,
         }
     }
@@ -54,10 +53,15 @@ impl AcmeProvider {
         &self,
         config: &Option<AcmeConfig>,
     ) {
+        #[cfg(feature = "http01")]
+        let mut prepared =
+            self.http01.lock().expect("HTTP-01 preparation poisoned");
+        #[cfg(feature = "http01")]
+        {
+            *prepared = None;
+        }
         match config {
             Some(cfg) => {
-                self.http01_directory
-                    .publish(Some(cfg.challenges_dir().clone()));
                 self.snapshot.store(Some(Arc::new(cfg.clone())));
                 if self.worker {
                     tracing::debug!(
@@ -73,7 +77,6 @@ impl AcmeProvider {
             }
             None => {
                 self.snapshot.store(None);
-                self.http01_directory.publish(None);
                 tracing::debug!(
                     path = %self.config_path.display(),
                     "acme.yaml not found; AcmeService running empty"
@@ -83,21 +86,20 @@ impl AcmeProvider {
     }
 }
 
-/// Registers the HTTP-01 challenge directory and the provider that
-/// publishes into it, in every process.
+/// Register ACME configuration and its optional native route contribution.
 impl Register<AppState> for AcmeProvider {
     fn register(state: &AppState) -> claviron::runtime::registry::Result<()> {
+        #[cfg(not(feature = "http01"))]
         let registry = state.registry_ref();
         state.bind_config_environment::<Self>()?;
-        let http01_directory = Arc::new(Http01ChallengeDirectory::default());
-        registry.insert(http01_directory.clone())?;
-        registry.register(Arc::new(AcmeProvider {
+        let provider = Arc::new(AcmeProvider {
             worker: state.is_worker(),
-            ..AcmeProvider::empty(
-                state.config_dir().join(CONFIG_FILE),
-                http01_directory,
-            )
-        }))?;
+            ..AcmeProvider::empty(state.config_dir().join(CONFIG_FILE))
+        });
+        #[cfg(feature = "http01")]
+        claviron::edge::register_routable(state, provider)?;
+        #[cfg(not(feature = "http01"))]
+        registry.register(provider)?;
         Ok(())
     }
 }
@@ -110,11 +112,11 @@ impl Component<AppState> for AcmeProvider {
         "AcmeService"
     }
 
-    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
+    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
         Some(self)
     }
 
-    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
+    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
         Some(self)
     }
 }
@@ -132,6 +134,12 @@ impl Configurable for AcmeProvider {
         Some(None)
     }
 
+    fn as_config_observer(
+        &self
+    ) -> Option<&dyn ConfigObserver<Config = Self::Config>> {
+        Some(self)
+    }
+
     async fn configure(
         &self,
         config: &Option<AcmeConfig>,
@@ -140,10 +148,23 @@ impl Configurable for AcmeProvider {
         Ok(())
     }
 
-    fn as_config_observer(
-        &self
-    ) -> Option<&dyn ConfigObserver<Config = Self::Config>> {
-        Some(self)
+    fn validate_config(
+        &self,
+        config: &Self::Config,
+    ) -> congif::Result<()> {
+        if let Some(http01) =
+            config.as_ref().and_then(|config| config.http01.as_ref())
+        {
+            if http01.enabled() && !cfg!(feature = "http01") {
+                return Err(congif::Error::msg(
+                    "acme.http01 requires the http01 feature",
+                ));
+            }
+            #[cfg(feature = "http01")]
+            crate::http01::validate_hosts(http01)
+                .map_err(congif::Error::msg)?;
+        }
+        Ok(())
     }
 }
 

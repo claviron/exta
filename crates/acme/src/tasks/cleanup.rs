@@ -26,6 +26,10 @@ pub async fn acme_challenge_gc(
         debug!("acme_gc: acme.yaml missing; skipping");
         return Ok(());
     };
+    if cfg.challenges_dir().as_os_str().is_empty() {
+        debug!("acme_gc: no file challenge storage configured; skipping");
+        return Ok(());
+    }
     let dir = cfg.challenges_dir().clone();
     let now = SystemTime::now();
     let max_age = Duration::from_secs(3600); // 60 minutes
