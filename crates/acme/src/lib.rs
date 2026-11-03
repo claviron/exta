@@ -5,7 +5,7 @@ pub mod clients;
 pub mod config;
 pub mod cryptex;
 mod error;
-#[cfg(feature = "http01")]
+#[cfg(feature = "http-0")]
 pub mod http01;
 mod meta;
 #[cfg(feature = "server")]

@@ -96,22 +96,14 @@ fn http01_selects_only_configured_canonical_hosts() {
     let host = "example.test".parse().unwrap();
     assert!(!selects(None, &host));
     for (yaml, expected) in [
-        ("false", false),
-        ("true", true),
-        ("hosts: any", true),
-        ("hosts: [EXAMPLE.test]", true),
-        ("hosts: [other.test]", false),
-        ("hosts: []", false),
+        ("any", true),
+        ("[EXAMPLE.test]", true),
+        ("[other.test]", false),
+        ("[]", false),
     ] {
-        let config: Http01Config = serde_yaml::from_str(yaml).unwrap();
+        let config: Http01Hosts = serde_yaml::from_str(yaml).unwrap();
         validate_hosts(&config).unwrap();
         assert_eq!(selects(Some(&config), &host), expected, "{yaml}");
-    }
-    for invalid in ["{}", "hosts: example.test", "hosts: any\nunknown: true"] {
-        assert!(
-            serde_yaml::from_str::<Http01Config>(invalid).is_err(),
-            "{invalid}"
-        );
     }
 }
 
@@ -198,4 +190,168 @@ async fn http01_does_not_cache_expired_values_or_hide_storage_errors() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[derive(Clone)]
+struct NonServingHarness {
+    interceptor: Arc<Http01Interception>,
+    config: Arc<HostConfig>,
+    key: claviron::http::ext::HostKey,
+    connection: Arc<claviron::http::ext::ConnCtx>,
+}
+
+impl claviron::edge::pipeline::HostHandler for NonServingHarness {
+    fn call(
+        &self,
+        request: HostRequest,
+    ) -> claviron::edge::pipeline::HostHandlerFuture {
+        let owner = self.clone();
+        Box::pin(async move {
+            owner
+                .interceptor
+                .intercept(
+                    request,
+                    NonServingContext {
+                        config: &owner.config,
+                        key: &owner.key,
+                        connection: &owner.connection,
+                        policy: &claviron::http::policy::HttpPolicy::unlimited(
+                        ),
+                    },
+                )
+                .await
+        })
+    }
+}
+
+#[tokio::test]
+async fn non_serving_http01_answers_before_policy_only_for_selected_hosts() {
+    use claviron::edge::pipeline::HostHandler;
+    use claviron::http::ext::{ConnCtx, HostKey};
+    let storage = storage();
+    let interceptor = Arc::new(Http01Interception {
+        hosts: Some(vec!["example.test".parse().unwrap()].into_boxed_slice()),
+        layer: Http01Layer::from(storage.clone() as Arc<dyn Http01Storage>),
+    });
+    let connection = Arc::new(ConnCtx {
+        state: Default::default(),
+        listener: "plain".parse().unwrap(),
+        proto: Some(claviron::http::listener::HttpProtocol::H1),
+        remote: "192.0.2.1:1234".parse().unwrap(),
+        local_ip: "192.0.2.2".parse().unwrap(),
+        local_port: 80,
+        real_ip: None,
+        country_code: None,
+        tls: None,
+    });
+    for policy in ["redirect", "reject"] {
+        let config = Arc::new(
+            serde_yaml::from_str::<HostConfig>(&format!(
+                "root: public\ntransport: {{non_ssl: {policy}}}"
+            ))
+            .unwrap(),
+        );
+        for host in ["example.test", "other.test"] {
+            let mut builder = HostPipelineBuilder::new();
+            builder
+                .layer(Arc::new(NonServingHarness {
+                    interceptor: interceptor.clone(),
+                    config: config.clone(),
+                    key: HostKey(Arc::new(host.parse().unwrap())),
+                    connection: connection.clone(),
+                }) as Arc<dyn HostHandler>)
+                .unwrap();
+            let pipeline = builder.build();
+            for (method, path, expected) in [
+                (
+                    Method::GET,
+                    "/.well-known/acme-challenge/token",
+                    StatusCode::OK,
+                ),
+                (
+                    Method::POST,
+                    "/.well-known/acme-challenge/token",
+                    StatusCode::METHOD_NOT_ALLOWED,
+                ),
+                (Method::GET, "/ordinary", StatusCode::IM_A_TEAPOT),
+            ] {
+                let drops = Arc::new(AtomicUsize::new(0));
+                let request = Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(boxed_body(Unread(drops.clone())))
+                    .unwrap();
+                let ServiceResult::Unhandled(prepared) =
+                    pipeline.prepare(request)
+                else {
+                    panic!("consuming actions run at dispatch");
+                };
+                let response = prepared
+                    .dispatch(|request| async move {
+                        let mut response = Response::new(request.into_body());
+                        *response.status_mut() = StatusCode::IM_A_TEAPOT;
+                        response
+                    })
+                    .await;
+                assert_eq!(
+                    response.status(),
+                    if host == "example.test" {
+                        expected
+                    } else {
+                        StatusCode::IM_A_TEAPOT
+                    }
+                );
+                if response.status() == StatusCode::OK {
+                    let bytes = response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes();
+                    assert_eq!(bytes.as_ptr(), storage.bytes.as_ptr());
+                } else {
+                    drop(response);
+                }
+                assert_eq!(drops.load(Ordering::Relaxed), 1);
+            }
+        }
+    }
+    assert_eq!(storage.reads.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn http01_method_and_empty_host_selection_omit_non_serving_storage_preparation()
+{
+    let state = AppState::standalone("http01-method", ".");
+    let mut config: AcmeConfig = serde_yaml::from_str(
+        r#"
+base_dir: storage/acme
+production_url: https://ca.example.test
+staging_url: https://staging.example.test
+organization:
+  name: Example
+  unit: Operations
+  country: US
+  state: Example
+  city: Example
+  email: operator@example.test
+algorithm: ES256
+renew_before: 30
+method: http-0
+"#,
+    )
+    .unwrap();
+    // An active method needs storage. Inactive selection must not try to
+    // acquire it; this fixture intentionally declares no directory or store.
+    assert!(prepare_non_serving_config(&state, Some(&config)).is_err());
+    config.method = None;
+    assert!(
+        prepare_non_serving_config(&state, Some(&config)).unwrap().is_none()
+    );
+    assert!(prepare_non_serving_config(&state, None).unwrap().is_none());
+    config.method = Some(crate::ChallengeMethod::Http0);
+    config.hosts = Http01Hosts::Named(Vec::new());
+    assert!(
+        prepare_non_serving_config(&state, Some(&config)).unwrap().is_none()
+    );
 }

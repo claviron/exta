@@ -40,7 +40,10 @@ pub struct AcmeConfig {
     #[serde(default)]
     challenges_dir: PathBuf,
     #[serde(default)]
-    pub http01: Option<Http01Config>,
+    pub method: Option<ChallengeMethod>,
+    /// Canonical hosts exposing the selected challenge method.
+    #[serde(default)]
+    pub hosts: Http01Hosts,
     production_url: String,
     staging_url: String,
     organization: Organization,
@@ -60,12 +63,11 @@ pub struct AcmeConfig {
     pub max_attempts_per_cn: u8,
 }
 
-/// HTTP-01 is absent/off, enabled for every host, or scoped explicitly.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum Http01Config {
-    Enabled(bool),
-    Scoped { hosts: Http01Hosts },
+/// Optional native challenge presentation selected by this provider.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChallengeMethod {
+    #[serde(rename = "http-0")]
+    Http0,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -81,9 +83,9 @@ pub enum Http01Any {
     Any,
 }
 
-impl Http01Config {
-    pub fn enabled(&self) -> bool {
-        !matches!(self, Self::Enabled(false))
+impl Default for Http01Hosts {
+    fn default() -> Self {
+        Self::Any(Http01Any::Any)
     }
 }
 
@@ -96,6 +98,11 @@ fn default_max_attempts_per_cn() -> u8 {
 }
 
 impl AcmeConfig {
+    /// No method selects no HTTP-01 listener or host contribution.
+    pub fn http01_hosts(&self) -> Option<&Http01Hosts> {
+        (self.method == Some(ChallengeMethod::Http0)).then_some(&self.hosts)
+    }
+
     pub fn account_dir(
         &self,
         name: &str,

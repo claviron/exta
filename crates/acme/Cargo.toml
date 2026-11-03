@@ -14,7 +14,7 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = []
-http01 = ["server", "claviron/edge", "dep:bytes"]
+http-0 = ["server", "claviron/edge", "dep:bytes"]
 db = ["dep:sqlx", "claviron/hosting"]
 postgres = ["db", "claviron/postgres"]
 # ACME accounts and logs in the SQLite file `db.yaml`'s `hosting:` names.

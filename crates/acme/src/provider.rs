@@ -28,7 +28,7 @@ pub const CONFIG_FILE: &str = "acme.yaml";
 pub struct AcmeProvider {
     config_path: PathBuf,
     snapshot: ArcSwapOption<AcmeConfig>,
-    #[cfg(feature = "http01")]
+    #[cfg(feature = "http-0")]
     pub(crate) http01:
         std::sync::Mutex<Option<Arc<crate::http01::Http01Layer>>>,
     worker: bool,
@@ -39,7 +39,7 @@ impl AcmeProvider {
         Self {
             config_path,
             snapshot: ArcSwapOption::empty(),
-            #[cfg(feature = "http01")]
+            #[cfg(feature = "http-0")]
             http01: std::sync::Mutex::default(),
             worker: false,
         }
@@ -53,10 +53,10 @@ impl AcmeProvider {
         &self,
         config: &Option<AcmeConfig>,
     ) {
-        #[cfg(feature = "http01")]
+        #[cfg(feature = "http-0")]
         let mut prepared =
             self.http01.lock().expect("HTTP-01 preparation poisoned");
-        #[cfg(feature = "http01")]
+        #[cfg(feature = "http-0")]
         {
             *prepared = None;
         }
@@ -89,16 +89,30 @@ impl AcmeProvider {
 /// Register ACME configuration and its optional native route contribution.
 impl Register<AppState> for AcmeProvider {
     fn register(state: &AppState) -> claviron::runtime::registry::Result<()> {
-        #[cfg(not(feature = "http01"))]
+        #[cfg(not(feature = "http-0"))]
         let registry = state.registry_ref();
         state.bind_config_environment::<Self>()?;
         let provider = Arc::new(AcmeProvider {
             worker: state.is_worker(),
             ..AcmeProvider::empty(state.config_dir().join(CONFIG_FILE))
         });
-        #[cfg(feature = "http01")]
-        claviron::edge::register_routable(state, provider)?;
-        #[cfg(not(feature = "http01"))]
+        #[cfg(feature = "http-0")]
+        {
+            let hosts = state
+                .registry_ref()
+                .resolve::<claviron::edge::HostAppRegistry>()
+                .ok_or_else(|| {
+                    claviron::runtime::registry::Error::msg(
+                        "HostAppRegistry not registered",
+                    )
+                })?;
+            // TODO: compose non-serving integrations when Edge supports multiple interceptors.
+            hosts.bind_non_serving_interception_with(
+                crate::http01::prepare_non_serving,
+            )?;
+            claviron::edge::register_routable(state, provider)?;
+        }
+        #[cfg(not(feature = "http-0"))]
         registry.register(provider)?;
         Ok(())
     }
@@ -152,16 +166,15 @@ impl Configurable for AcmeProvider {
         &self,
         config: &Self::Config,
     ) -> congif::Result<()> {
-        if let Some(http01) =
-            config.as_ref().and_then(|config| config.http01.as_ref())
+        if let Some(_hosts) = config.as_ref().and_then(AcmeConfig::http01_hosts)
         {
-            if http01.enabled() && !cfg!(feature = "http01") {
+            if !cfg!(feature = "http-0") {
                 return Err(congif::Error::msg(
-                    "acme.http01 requires the http01 feature",
+                    "acme.method http-0 requires the http-0 feature",
                 ));
             }
-            #[cfg(feature = "http01")]
-            crate::http01::validate_hosts(http01)
+            #[cfg(feature = "http-0")]
+            crate::http01::validate_hosts(_hosts)
                 .map_err(congif::Error::msg)?;
         }
         Ok(())

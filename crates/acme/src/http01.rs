@@ -1,13 +1,18 @@
 //! Native HTTP-01 contribution. Host selection is preparation work; storage
 //! owns expiry and publication, independently of the transport or Rust router.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::edge::extension::RouteLayer;
-use claviron::edge::pipeline::{DispatchCall, HostLayer, HostLayerBuilder};
+use claviron::edge::pipeline::{
+    DispatchCall, HostHandlerResult, HostLayer, HostLayerBuilder, HostRequest,
+    InterceptsNonServing, NonServingContext,
+};
 use claviron::edge::{Host, HostConfig, Routable, RouteProtocol};
 use claviron::http::{
     RouteBody, RouteResponse, ServiceResult, bytes_body, empty_body, err_status,
@@ -15,7 +20,7 @@ use claviron::http::{
 use claviron::runtime::{AppState, registry};
 use http::{Method, Request, Response, StatusCode, header};
 
-use crate::{AcmeError, AcmeProvider, Http01Config, Http01Hosts};
+use crate::{AcmeConfig, AcmeError, AcmeProvider, Http01Hosts};
 
 // RFC 8555 fixes this path prefix; it is not an operator routing default.
 const PREFIX: &str = "/.well-known/acme-challenge/";
@@ -54,6 +59,56 @@ impl Http01Storage for FileStorage {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Selection {
+    Pass,
+    InvalidToken,
+    InvalidMethod,
+    Lookup { head: bool },
+}
+
+fn select(
+    method: &Method,
+    path: &str,
+) -> Selection {
+    let Some(token) = path.strip_prefix(PREFIX) else {
+        return Selection::Pass;
+    };
+    if !crate::clients::valid_token(token) {
+        return Selection::InvalidToken;
+    }
+    match *method {
+        Method::GET => Selection::Lookup { head: false },
+        Method::HEAD => Selection::Lookup { head: true },
+        _ => Selection::InvalidMethod,
+    }
+}
+
+fn invalid_method() -> RouteResponse {
+    let mut response = err_status(StatusCode::METHOD_NOT_ALLOWED);
+    response
+        .headers_mut()
+        .insert(header::ALLOW, http::HeaderValue::from_static("GET, HEAD"));
+    response
+}
+
+fn storage(
+    state: &AppState,
+    config: &AcmeConfig,
+) -> registry::Result<Arc<dyn Http01Storage>> {
+    if let Some(storage) =
+        state.registry_ref().resolve_dyn::<dyn Http01Storage>()
+    {
+        return Ok(storage);
+    }
+    if config.challenges_dir().as_os_str().is_empty() {
+        return Err(registry::Error::msg(
+            "HTTP-01 requires Http01Storage or challenges_dir",
+        ));
+    }
+    Ok(Arc::new(FileStorage(config.challenges_dir().clone())))
+}
+
 pub struct Http01Layer {
     storage: Arc<dyn Http01Storage>,
 }
@@ -71,35 +126,31 @@ impl RouteLayer for Http01Layer {
     ) -> claviron::edge::Result<()> {
         let storage = self.storage.clone();
         layer.request(move |request: Request<RouteBody>| {
-            let Some(token) = request.uri().path().strip_prefix(PREFIX) else {
-                return DispatchCall::ready(ServiceResult::Unhandled(request));
-            };
-            if !crate::clients::valid_token(token) {
-                return DispatchCall::ready(ServiceResult::Handled(
-                    err_status(StatusCode::FORBIDDEN),
-                ));
-            }
-            if request.method() != Method::GET
-                && request.method() != Method::HEAD
+            let head_only = match select(request.method(), request.uri().path())
             {
-                let mut response = err_status(StatusCode::METHOD_NOT_ALLOWED);
-                response.headers_mut().insert(
-                    header::ALLOW,
-                    http::HeaderValue::from_static("GET, HEAD"),
-                );
-                return DispatchCall::ready(ServiceResult::Handled(response));
-            }
+                Selection::Pass => {
+                    return DispatchCall::ready(ServiceResult::Unhandled(
+                        request,
+                    ));
+                }
+                Selection::InvalidToken => {
+                    return DispatchCall::ready(ServiceResult::Handled(
+                        err_status(StatusCode::FORBIDDEN),
+                    ));
+                }
+                Selection::InvalidMethod => {
+                    return DispatchCall::ready(ServiceResult::Handled(
+                        invalid_method(),
+                    ));
+                }
+                Selection::Lookup { head } => head,
+            };
             let (head, body) = request.into_parts();
             drop(body);
             let storage = storage.clone();
             DispatchCall::new(async move {
                 ServiceResult::Handled(
-                    reply(
-                        storage.as_ref(),
-                        head.uri.path(),
-                        head.method == Method::HEAD,
-                    )
-                    .await,
+                    reply(storage.as_ref(), head.uri.path(), head_only).await,
                 )
             })
         });
@@ -153,8 +204,100 @@ async fn reply(
     }
 }
 
-pub(crate) fn validate_hosts(config: &Http01Config) -> Result<(), String> {
-    if let Http01Config::Scoped { hosts: Http01Hosts::Named(names) } = config {
+/// One captured HTTP-01 selection for the listener's non-serving path.
+struct Http01Interception {
+    hosts: Option<Box<[Host]>>,
+    layer: Http01Layer,
+}
+
+impl InterceptsNonServing for Http01Interception {
+    fn intercept<'a>(
+        &'a self,
+        request: HostRequest,
+        context: NonServingContext<'a>,
+    ) -> Pin<Box<dyn Future<Output = HostHandlerResult> + Send + 'a>> {
+        if self
+            .hosts
+            .as_ref()
+            .is_some_and(|hosts| !hosts.contains(context.key.0.as_ref()))
+        {
+            return Box::pin(std::future::ready(ServiceResult::Unhandled(
+                request,
+            )));
+        }
+        let head_only =
+            match select(&request.head().method, request.head().uri.path()) {
+                Selection::Pass => {
+                    return Box::pin(std::future::ready(
+                        ServiceResult::Unhandled(request),
+                    ));
+                }
+                Selection::InvalidToken => {
+                    return Box::pin(std::future::ready(
+                        ServiceResult::Handled(err_status(
+                            StatusCode::FORBIDDEN,
+                        )),
+                    ));
+                }
+                Selection::InvalidMethod => {
+                    return Box::pin(std::future::ready(
+                        ServiceResult::Handled(invalid_method()),
+                    ));
+                }
+                Selection::Lookup { head } => head,
+            };
+        let (head, body) = request.into_request().into_parts();
+        drop(body);
+        Box::pin(async move {
+            ServiceResult::Handled(
+                reply(self.layer.storage.as_ref(), head.uri.path(), head_only)
+                    .await,
+            )
+        })
+    }
+}
+
+/// Prepare the optional HTTP-01 interceptor from staged configuration.
+/// Called at plain-listener preparation. The returned trait object is public:
+/// a downstream interceptor can call it and pass Unhandled to another owner.
+/// `register` binds this factory automatically with the `http-0` feature.
+pub fn prepare_non_serving(
+    state: &AppState
+) -> registry::Result<Option<Arc<dyn InterceptsNonServing>>> {
+    let config = state.config_reader().snapshot::<AcmeProvider>()?;
+    prepare_non_serving_config(state, config.as_ref().as_ref())
+}
+
+fn prepare_non_serving_config(
+    state: &AppState,
+    config: Option<&AcmeConfig>,
+) -> registry::Result<Option<Arc<dyn InterceptsNonServing>>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let hosts = match config.http01_hosts() {
+        None => return Ok(None),
+        Some(Http01Hosts::Any(_)) => None,
+        Some(Http01Hosts::Named(names)) => {
+            if names.is_empty() {
+                return Ok(None);
+            }
+            Some(
+                names
+                    .iter()
+                    .map(|name| {
+                        name.parse::<Host>().map_err(registry::Error::msg)
+                    })
+                    .collect::<registry::Result<Box<[_]>>>()?,
+            )
+        }
+    };
+    let layer = Http01Layer::from(storage(state, config)?);
+    Ok(Some(Arc::new(Http01Interception { hosts, layer })))
+}
+
+pub(crate) fn validate_hosts(config: &Http01Hosts) -> Result<(), String> {
+    if let Http01Hosts::Named(names) = config {
         for name in names {
             name.parse::<Host>()?;
         }
@@ -163,13 +306,12 @@ pub(crate) fn validate_hosts(config: &Http01Config) -> Result<(), String> {
 }
 
 fn selects(
-    config: Option<&Http01Config>,
+    config: Option<&Http01Hosts>,
     host: &Host,
 ) -> bool {
     match config {
-        Some(Http01Config::Enabled(enabled)) => *enabled,
-        Some(Http01Config::Scoped { hosts: Http01Hosts::Any(_) }) => true,
-        Some(Http01Config::Scoped { hosts: Http01Hosts::Named(names) }) => {
+        Some(Http01Hosts::Any(_)) => true,
+        Some(Http01Hosts::Named(names)) => {
             names.iter().any(|name| name.parse::<Host>().as_ref() == Ok(host))
         }
         None => false,
@@ -190,7 +332,7 @@ impl Routable for AcmeProvider {
         _host: &HostConfig,
     ) -> bool {
         self.snapshot()
-            .is_some_and(|config| selects(config.http01.as_ref(), key))
+            .is_some_and(|config| selects(config.http01_hosts(), key))
     }
 
     fn layers(
@@ -203,26 +345,12 @@ impl Routable for AcmeProvider {
             self.http01.lock().expect("HTTP-01 preparation poisoned");
         let Some(config) = self
             .snapshot()
-            .filter(|config| selects(config.http01.as_ref(), key))
+            .filter(|config| selects(config.http01_hosts(), key))
         else {
             return Ok(Vec::new());
         };
         if prepared.is_none() {
-            let storage = match state
-                .registry_ref()
-                .resolve_dyn::<dyn Http01Storage>()
-            {
-                Some(storage) => storage,
-                None => {
-                    if config.challenges_dir().as_os_str().is_empty() {
-                        return Err(registry::Error::msg(
-                            "HTTP-01 requires Http01Storage or challenges_dir",
-                        ));
-                    }
-                    Arc::new(FileStorage(config.challenges_dir().clone()))
-                        as Arc<dyn Http01Storage>
-                }
-            };
+            let storage = storage(state, &config)?;
             *prepared = Some(Arc::new(Http01Layer::from(storage)));
         }
         Ok(vec![prepared.as_ref().expect("prepared HTTP-01 layer").clone()])

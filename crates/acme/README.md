@@ -26,6 +26,7 @@ Default features are empty.
 
 | Feature | Adds |
 | --- | --- |
+| `http-0` | Optional native HTTP-01 handler for plain serving and non-serving hosts. |
 | `server` | `AcmeProvider`, `register`, and prepared `acme.yaml` configuration. |
 | `db` | SQLx-backed `AcmeStore` and hosting integration. Database action helpers also require `server`. |
 | `postgres` | `db` with Claviron's PostgreSQL backend. |
@@ -36,7 +37,7 @@ Default features are empty.
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.24", default-features = false, features = ["edge", "http01", "postgres", "tasks"] }
+claviron = { version = "0.2.0-alpha.24", default-features = false, features = ["edge", "postgres", "tasks"] }
 claviron-acme = { version = "0.2.0-alpha.24", features = ["server", "postgres", "tasks"] }
 ```
 
@@ -83,22 +84,33 @@ max_attempts_per_cn: 3
 Paths are relative to the application working directory. `renew_before` is in
 days. These values are an example deployment policy, not a claim about CA quotas.
 
-Enable this crate's `http01` feature to contribute native HTTP-01 routes through
-Edge's `Routable` API. This does not install a listener or an Axum router.
+The `http-0` integration below is unreleased.
+
+With this crate's `http-0` feature, `claviron_acme::register(state)` automatically
+registers the serving Routable contribution and non-serving interceptor factory.
 
 ```yaml
-http01:
-  hosts: any
+method: http-0
+hosts: any
 ```
 
-Use `hosts: [example.com, example.net]` to select canonical host keys. `http01:
-true` also selects every declared host; `false` or omission contributes no layer.
-Host and protocol matching happen at boot/reload. `match_protocol` selects only
-plain HTTP; HTTPS and QUIC plans contain no HTTP-01 action. Selected hosts share
-one prepared layer; request processing reaches it after normal host
-access/quota/body policies.
-Undefined hosts remain unresolved. Public port-80 reachability and the host's
-cleartext policy remain the application's responsibility.
+`hosts` defaults to `any`; use `hosts: [example.com, example.net]` to select
+canonical host keys. An absent method or `hosts: []` installs no contribution.
+Host and protocol matching happen at boot/reload. Plain `non_ssl: serve` plans
+use the prepared Routable layer after host access/quota/body policies. Plain
+`non_ssl: redirect/reject` uses `InterceptsNonServing` before the policy reply,
+with the same token selection and storage implementation. Normal host layers do
+not run on that path. Other paths fall through with their unread body.
+
+The non-serving factory reads the staged ACME configuration at each listener
+publication; an absent method and empty host selections install no hook.
+HTTPS/QUIC do not prepare it. Host/listener admission and explicit listener
+filters still apply. Public port-80 reachability remains the application's
+responsibility. The factory occupies Edge's single non-serving
+binding while registered. `http01::prepare_non_serving` is public and returns
+an `InterceptsNonServing` handler for explicit composition; Unhandled preserves
+the request for the next handler. The automatic binding's composition limit is
+marked TODO at registration.
 
 `http01::Http01Storage` supplies raw bytes for live tokens. Bind a concrete
 implementation through the runtime registry before host preparation to use a
