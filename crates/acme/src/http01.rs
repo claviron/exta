@@ -1,5 +1,5 @@
-//! Native HTTP-01 contribution. Host selection is preparation work; storage
-//! owns expiry and publication, independently of the transport or Rust router.
+//! Native HTTP-01 handling for admitted plain HTTP hosts.
+//! Storage owns expiry and publication.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ use claviron::http::{
 use claviron::runtime::{AppState, registry};
 use http::{Method, Request, Response, StatusCode, header};
 
-use crate::{AcmeConfig, AcmeError, AcmeProvider, Http01Hosts};
+use crate::{AcmeConfig, AcmeError, AcmeProvider, ChallengeMethod};
 
 // RFC 8555 fixes this path prefix; it is not an operator routing default.
 const PREFIX: &str = "/.well-known/acme-challenge/";
@@ -204,27 +204,12 @@ async fn reply(
     }
 }
 
-/// One captured HTTP-01 selection for the listener's non-serving path.
-struct Http01Interception {
-    hosts: Option<Box<[Host]>>,
-    layer: Http01Layer,
-}
-
-impl InterceptsNonServing for Http01Interception {
+impl InterceptsNonServing for Http01Layer {
     fn intercept<'a>(
         &'a self,
         request: HostRequest,
-        context: NonServingContext<'a>,
+        _context: NonServingContext<'a>,
     ) -> Pin<Box<dyn Future<Output = HostHandlerResult> + Send + 'a>> {
-        if self
-            .hosts
-            .as_ref()
-            .is_some_and(|hosts| !hosts.contains(context.key.0.as_ref()))
-        {
-            return Box::pin(std::future::ready(ServiceResult::Unhandled(
-                request,
-            )));
-        }
         let head_only =
             match select(&request.head().method, request.head().uri.path()) {
                 Selection::Pass => {
@@ -250,8 +235,7 @@ impl InterceptsNonServing for Http01Interception {
         drop(body);
         Box::pin(async move {
             ServiceResult::Handled(
-                reply(self.layer.storage.as_ref(), head.uri.path(), head_only)
-                    .await,
+                reply(self.storage.as_ref(), head.uri.path(), head_only).await,
             )
         })
     }
@@ -275,47 +259,11 @@ fn prepare_non_serving_config(
     let Some(config) = config else {
         return Ok(None);
     };
-    let hosts = match config.http01_hosts() {
-        None => return Ok(None),
-        Some(Http01Hosts::Any(_)) => None,
-        Some(Http01Hosts::Named(names)) => {
-            if names.is_empty() {
-                return Ok(None);
-            }
-            Some(
-                names
-                    .iter()
-                    .map(|name| {
-                        name.parse::<Host>().map_err(registry::Error::msg)
-                    })
-                    .collect::<registry::Result<Box<[_]>>>()?,
-            )
-        }
-    };
+    if config.method != Some(ChallengeMethod::Http0) {
+        return Ok(None);
+    }
     let layer = Http01Layer::from(storage(state, config)?);
-    Ok(Some(Arc::new(Http01Interception { hosts, layer })))
-}
-
-pub(crate) fn validate_hosts(config: &Http01Hosts) -> Result<(), String> {
-    if let Http01Hosts::Named(names) = config {
-        for name in names {
-            name.parse::<Host>()?;
-        }
-    }
-    Ok(())
-}
-
-fn selects(
-    config: Option<&Http01Hosts>,
-    host: &Host,
-) -> bool {
-    match config {
-        Some(Http01Hosts::Any(_)) => true,
-        Some(Http01Hosts::Named(names)) => {
-            names.iter().any(|name| name.parse::<Host>().as_ref() == Ok(host))
-        }
-        None => false,
-    }
+    Ok(Some(Arc::new(layer)))
 }
 
 impl Routable for AcmeProvider {
@@ -328,24 +276,24 @@ impl Routable for AcmeProvider {
 
     fn match_host(
         &self,
-        key: &Host,
+        _key: &Host,
         _host: &HostConfig,
     ) -> bool {
         self.snapshot()
-            .is_some_and(|config| selects(config.http01_hosts(), key))
+            .is_some_and(|config| config.method == Some(ChallengeMethod::Http0))
     }
 
     fn layers(
         self: Arc<Self>,
         state: &AppState,
-        key: &Host,
+        _key: &Host,
         _host: Arc<HostConfig>,
     ) -> registry::Result<Vec<Arc<dyn RouteLayer>>> {
         let mut prepared =
             self.http01.lock().expect("HTTP-01 preparation poisoned");
         let Some(config) = self
             .snapshot()
-            .filter(|config| selects(config.http01_hosts(), key))
+            .filter(|config| config.method == Some(ChallengeMethod::Http0))
         else {
             return Ok(Vec::new());
         };

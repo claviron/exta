@@ -88,23 +88,11 @@ async fn execute(
 }
 
 #[test]
-fn http01_selects_only_configured_canonical_hosts() {
+fn http01_only_contributes_to_plain_http() {
     let provider = AcmeProvider::empty("acme.yaml".into());
     assert!(provider.match_protocol(RouteProtocol::Http));
     assert!(!provider.match_protocol(RouteProtocol::Https));
     assert!(!provider.match_protocol(RouteProtocol::Quic));
-    let host = "example.test".parse().unwrap();
-    assert!(!selects(None, &host));
-    for (yaml, expected) in [
-        ("any", true),
-        ("[EXAMPLE.test]", true),
-        ("[other.test]", false),
-        ("[]", false),
-    ] {
-        let config: Http01Hosts = serde_yaml::from_str(yaml).unwrap();
-        validate_hosts(&config).unwrap();
-        assert_eq!(selects(Some(&config), &host), expected, "{yaml}");
-    }
 }
 
 #[tokio::test]
@@ -194,7 +182,7 @@ async fn http01_does_not_cache_expired_values_or_hide_storage_errors() {
 
 #[derive(Clone)]
 struct NonServingHarness {
-    interceptor: Arc<Http01Interception>,
+    interceptor: Arc<Http01Layer>,
     config: Arc<HostConfig>,
     key: claviron::http::ext::HostKey,
     connection: Arc<claviron::http::ext::ConnCtx>,
@@ -225,14 +213,12 @@ impl claviron::edge::pipeline::HostHandler for NonServingHarness {
 }
 
 #[tokio::test]
-async fn non_serving_http01_answers_before_policy_only_for_selected_hosts() {
+async fn non_serving_http01_answers_before_policy_for_every_admitted_host() {
     use claviron::edge::pipeline::HostHandler;
     use claviron::http::ext::{ConnCtx, HostKey};
     let storage = storage();
-    let interceptor = Arc::new(Http01Interception {
-        hosts: Some(vec!["example.test".parse().unwrap()].into_boxed_slice()),
-        layer: Http01Layer::from(storage.clone() as Arc<dyn Http01Storage>),
-    });
+    let interceptor =
+        Arc::new(Http01Layer::from(storage.clone() as Arc<dyn Http01Storage>));
     let connection = Arc::new(ConnCtx {
         state: Default::default(),
         listener: "plain".parse().unwrap(),
@@ -293,14 +279,7 @@ async fn non_serving_http01_answers_before_policy_only_for_selected_hosts() {
                         response
                     })
                     .await;
-                assert_eq!(
-                    response.status(),
-                    if host == "example.test" {
-                        expected
-                    } else {
-                        StatusCode::IM_A_TEAPOT
-                    }
-                );
+                assert_eq!(response.status(), expected);
                 if response.status() == StatusCode::OK {
                     let bytes = response
                         .into_body()
@@ -316,12 +295,11 @@ async fn non_serving_http01_answers_before_policy_only_for_selected_hosts() {
             }
         }
     }
-    assert_eq!(storage.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(storage.reads.load(Ordering::Relaxed), 4);
 }
 
 #[test]
-fn http01_method_and_empty_host_selection_omit_non_serving_storage_preparation()
-{
+fn absent_http01_method_omits_non_serving_storage_preparation() {
     let state = AppState::standalone("http01-method", ".");
     let mut config: AcmeConfig = serde_yaml::from_str(
         r#"
@@ -349,9 +327,4 @@ method: http-0
         prepare_non_serving_config(&state, Some(&config)).unwrap().is_none()
     );
     assert!(prepare_non_serving_config(&state, None).unwrap().is_none());
-    config.method = Some(crate::ChallengeMethod::Http0);
-    config.hosts = Http01Hosts::Named(Vec::new());
-    assert!(
-        prepare_non_serving_config(&state, Some(&config)).unwrap().is_none()
-    );
 }

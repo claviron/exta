@@ -91,19 +91,17 @@ registers the serving Routable contribution and non-serving interceptor factory.
 
 ```yaml
 method: http-0
-hosts: any
 ```
 
-`hosts` defaults to `any`; use `hosts: [example.com, example.net]` to select
-canonical host keys. An absent method or `hosts: []` installs no contribution.
-Host and protocol matching happen at boot/reload. Plain `non_ssl: serve` plans
+`method: http-0` enables the handler for all admitted plain HTTP hosts.
+An absent method installs no contribution. Plain `non_ssl: serve` plans
 use the prepared Routable layer after host access/quota/body policies. Plain
 `non_ssl: redirect/reject` uses `InterceptsNonServing` before the policy reply,
 with the same token selection and storage implementation. Normal host layers do
 not run on that path. Other paths fall through with their unread body.
 
 The non-serving factory reads the staged ACME configuration at each listener
-publication; an absent method and empty host selections install no hook.
+publication; an absent method installs no hook.
 HTTPS/QUIC do not prepare it. Host/listener admission and explicit listener
 filters still apply. Public port-80 reachability remains the application's
 responsibility. The factory occupies Edge's single non-serving

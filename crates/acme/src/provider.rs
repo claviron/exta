@@ -20,7 +20,7 @@ use claviron::runtime::registry::{Component, Reloadable, priority};
 use claviron::runtime::{AppState, Register};
 use tracing::info;
 
-use crate::config::AcmeConfig;
+use crate::config::{AcmeConfig, ChallengeMethod};
 
 /// What the ACME configuration file is called in the config directory.
 pub const CONFIG_FILE: &str = "acme.yaml";
@@ -166,16 +166,14 @@ impl Configurable for AcmeProvider {
         &self,
         config: &Self::Config,
     ) -> congif::Result<()> {
-        if let Some(_hosts) = config.as_ref().and_then(AcmeConfig::http01_hosts)
+        if config
+            .as_ref()
+            .is_some_and(|config| config.method == Some(ChallengeMethod::Http0))
+            && !cfg!(feature = "http-0")
         {
-            if !cfg!(feature = "http-0") {
-                return Err(congif::Error::msg(
-                    "acme.method http-0 requires the http-0 feature",
-                ));
-            }
-            #[cfg(feature = "http-0")]
-            crate::http01::validate_hosts(_hosts)
-                .map_err(congif::Error::msg)?;
+            return Err(congif::Error::msg(
+                "acme.method http-0 requires the http-0 feature",
+            ));
         }
         Ok(())
     }

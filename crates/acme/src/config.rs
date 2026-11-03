@@ -41,9 +41,6 @@ pub struct AcmeConfig {
     challenges_dir: PathBuf,
     #[serde(default)]
     pub method: Option<ChallengeMethod>,
-    /// Canonical hosts exposing the selected challenge method.
-    #[serde(default)]
-    pub hosts: Http01Hosts,
     production_url: String,
     staging_url: String,
     organization: Organization,
@@ -70,25 +67,6 @@ pub enum ChallengeMethod {
     Http0,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(untagged)]
-pub enum Http01Hosts {
-    Any(Http01Any),
-    Named(Vec<Box<str>>),
-}
-
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Http01Any {
-    Any,
-}
-
-impl Default for Http01Hosts {
-    fn default() -> Self {
-        Self::Any(Http01Any::Any)
-    }
-}
-
 fn default_rate_limit_window() -> Duration {
     Duration::from_secs(3600)
 }
@@ -98,11 +76,6 @@ fn default_max_attempts_per_cn() -> u8 {
 }
 
 impl AcmeConfig {
-    /// No method selects no HTTP-01 listener or host contribution.
-    pub fn http01_hosts(&self) -> Option<&Http01Hosts> {
-        (self.method == Some(ChallengeMethod::Http0)).then_some(&self.hosts)
-    }
-
     pub fn account_dir(
         &self,
         name: &str,
