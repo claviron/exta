@@ -78,7 +78,7 @@ async fn acme_authority_routes_nonce_and_order_to_the_configured_port() {
     let csr_key = generators::generate_private_key().unwrap();
     let csr = generators::generate_server_csr(
         &csr_key,
-        "example.test",
+        &"example.test".parse().unwrap(),
         vec!["example.test".into()],
         &Organization::default(),
     )

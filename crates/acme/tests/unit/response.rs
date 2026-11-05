@@ -11,7 +11,7 @@ async fn acme_response_rejects_errors_at_every_certificate_endpoint() {
     let csr_key = generators::generate_private_key().unwrap();
     let csr = generators::generate_server_csr(
         &csr_key,
-        "example.test",
+        &"example.test".parse().unwrap(),
         vec!["example.test".into()],
         &Organization::default(),
     )
@@ -62,7 +62,7 @@ async fn acme_response_preserves_success_and_invalid_order_behavior() {
     let csr_key = generators::generate_private_key().unwrap();
     let csr = generators::generate_server_csr(
         &csr_key,
-        "example.test",
+        &"example.test".parse().unwrap(),
         vec!["example.test".into()],
         &Organization::default(),
     )

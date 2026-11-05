@@ -8,28 +8,26 @@ async fn acme_response_issuance_logs_cover_validation_and_persistence() {
     let (account_key, jwk) =
         generate_acme_key_with_jwk(&Algorithm::ES256).unwrap();
     let ca_key = generators::generate_ca_key().unwrap();
-    let ca_key = ca_key.serialize_pem();
     let ca = generators::generate_ca_cert(
-        "authority.test",
-        ca_key.as_bytes(),
+        &"authority.test".parse().unwrap(),
+        &ca_key,
         30,
-        None,
-        None,
+        &Default::default(),
     )
     .unwrap();
     let key = generators::generate_private_key().unwrap();
-    let pem = generators::generate_leaf_cert(
+    let certificate = generators::generate_leaf_cert(
         claviron::hosting::CertificateKind::Server,
-        "example.test",
-        key.serialize_pem().as_bytes(),
-        &ca,
-        ca_key.as_bytes(),
+        &"example.test".parse().unwrap(),
+        &key,
+        ca.as_ref(),
+        &ca_key,
         1,
         &[] as &[String],
     )
     .unwrap();
-    let pem = String::from_utf8(pem).unwrap();
-    let original_der = concat_chain_bytes_from_pem(pem.as_bytes()).unwrap();
+    let pem = certificate_chain_to_pem(certificate.as_ref()).unwrap();
+    let original_der = certificate.to_vec();
 
     for renew in [false, true] {
         for failure in ["http", "pem", "storage", "none"] {

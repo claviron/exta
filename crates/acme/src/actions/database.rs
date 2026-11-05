@@ -10,7 +10,7 @@ use claviron::ssl::generators::{
 use claviron::ssl::parsers::{
     concat_chain_bytes_from_pem, take_first_cert_from_der,
 };
-use claviron::ssl::{Aliases, Organization, Sni};
+use claviron::ssl::{Aliases, CommonName, Organization, Sni};
 use time::OffsetDateTime;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -121,7 +121,7 @@ async fn add_with_client(
         let private_key = generate_private_key()?;
         let organization = Organization::from_name(&account.organization);
         let csr =
-            generate_server_csr(&private_key, cn.as_str(), Aliases::from(aliases), &organization)?;
+            generate_server_csr(&private_key, &cn.as_str().parse()?, Aliases::from(aliases), &organization)?;
         let client = CertClient::with_client(make_client()?, &account.private_key, &account.url)
             .map_err(|error| AcmeError::ClientCreationFailed(error.to_string()))?;
         let jwk: AcmeJwk = serde_json::from_value(account.jwk.clone())
@@ -252,7 +252,7 @@ async fn renew_with_client(
         let organization = Organization::from_name(&account.organization);
         let csr = generate_server_csr(
             &private_key,
-            &cert.cn,
+            &cert.cn.parse::<CommonName>()?,
             &aliases,
             &organization,
         )?;

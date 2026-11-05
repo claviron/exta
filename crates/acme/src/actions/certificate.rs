@@ -39,7 +39,7 @@ pub async fn new_cert(
 
     let csr = generate_server_csr(
         &private_key,
-        cname.as_str(),
+        &cname.as_str().parse()?,
         Aliases::from(domains),
         organization,
     )?;

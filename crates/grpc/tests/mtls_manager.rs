@@ -55,7 +55,7 @@ async fn registration_persists_only_public_material_and_reuses_the_same_device()
         let key = generators::generate_private_key().unwrap();
         generators::generate_server_csr(
             &key,
-            "request.test",
+            &"request.test".parse().unwrap(),
             Vec::new(),
             &Organization::default(),
         )
@@ -98,30 +98,26 @@ async fn file_authority_persists_public_issuer_hierarchy_without_private_keys()
         .await
         .unwrap();
     let store = HostingStore::sqlite(pool);
-    let root_key = generators::generate_ca_key().unwrap().serialize_pem();
+    let root_key = generators::generate_ca_key().unwrap();
     let root = generators::generate_ca_cert(
-        "Root CA",
-        root_key.as_bytes(),
+        &"Root CA".parse().unwrap(),
+        &root_key,
         30,
-        None,
-        None,
+        &Default::default(),
     )
     .unwrap();
-    let key = generators::generate_ca_key().unwrap().serialize_pem();
+    let key = generators::generate_ca_key().unwrap();
     let ca = generators::generate_intermediate_ca_cert(
-        key.as_bytes(),
-        &root,
-        root_key.as_bytes(),
-        "Intermediate CA",
+        &key,
+        root.as_ref(),
+        &root_key,
+        &"Intermediate CA".parse().unwrap(),
         7,
         &Default::default(),
         Some(0),
     )
     .unwrap();
-    let chain = [&ca, &root].map(|pem| {
-        claviron::ssl::parsers::concat_chain_bytes_from_pem(pem).unwrap().into()
-    });
-    let authority = CertAuthority::new("authority.pem".into(), chain.into());
+    let authority = CertAuthority::new("authority.pem".into(), vec![ca, root]);
     let issuer = register_file_issuer(&store, &authority).await.unwrap();
     let repeated = register_file_issuer(&store, &authority).await.unwrap();
     assert_eq!(issuer.issuer_id(), repeated.issuer_id());
@@ -161,7 +157,7 @@ fn issuance_input_requires_explicit_validity_and_exact_client_names() {
     assert!(input(request("*.test", 1)).is_err());
     let IssuanceRequest { name, aliases, .. } =
         input(request("client.test", 1)).unwrap();
-    assert_eq!(name, "client.test");
+    assert_eq!(name.as_str(), "client.test");
     assert_eq!(aliases, ["client.test", "alias.test"]);
 }
 

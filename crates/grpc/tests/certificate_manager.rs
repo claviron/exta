@@ -17,16 +17,18 @@ async fn transfer_roundtrip_keeps_key_optional_and_ca_unassigned() {
     let manager = CertificateManager::new(store.clone(), Some(1));
     let key = generators::generate_ca_key().unwrap();
     let ca = generators::generate_ca_cert(
-        "root.test",
-        key.serialize_pem().as_bytes(),
+        &"root.test".parse().unwrap(),
+        &key,
         30,
-        None,
-        None,
+        &Default::default(),
     )
     .unwrap();
     let request = || ImportCertificateRequest {
         issuer: None,
-        certificate_chain_pem: String::from_utf8(ca.clone()).unwrap(),
+        certificate_chain_pem: formatters::certificate_chain_to_pem(
+            ca.as_ref(),
+        )
+        .unwrap(),
         private_key_pem: key.serialize_pem(),
     };
     let root = manager.import_certificate(request()).await.unwrap();
@@ -60,10 +62,10 @@ async fn transfer_roundtrip_keeps_key_optional_and_ca_unassigned() {
     }
     let leaf_key = generators::generate_private_key().unwrap();
     let leaf = generators::generate_client_cert(
-        "client.test",
-        leaf_key.serialize_pem().as_bytes(),
-        &ca,
-        key.serialize_pem().as_bytes(),
+        &"client.test".parse().unwrap(),
+        &leaf_key,
+        ca.as_ref(),
+        &key,
         1,
         &[] as &[String],
     )
@@ -71,8 +73,10 @@ async fn transfer_roundtrip_keeps_key_optional_and_ca_unassigned() {
     let client = manager
         .import_certificate(ImportCertificateRequest {
             issuer: None,
-            certificate_chain_pem: String::from_utf8([ca, leaf].concat())
-                .unwrap(),
+            certificate_chain_pem: formatters::certificate_chain_to_pem(
+                &[ca.as_ref(), leaf.as_ref()].concat(),
+            )
+            .unwrap(),
             private_key_pem: leaf_key.serialize_pem(),
         })
         .await
@@ -147,26 +151,27 @@ async fn acme_import_is_rejected_but_existing_material_can_be_exported() {
     let manager = CertificateManager::new(store.clone(), Some(1));
     let ca_key = generators::generate_ca_key().unwrap();
     let ca = generators::generate_ca_cert(
-        "public-ca.test",
-        ca_key.serialize_pem().as_bytes(),
+        &"public-ca.test".parse().unwrap(),
+        &ca_key,
         30,
-        None,
-        None,
+        &Default::default(),
     )
     .unwrap();
     let key = generators::generate_private_key().unwrap();
     let server = generators::generate_leaf_cert(
         CertificateKind::Server,
-        "server.test",
-        key.serialize_pem().as_bytes(),
-        &ca,
-        ca_key.serialize_pem().as_bytes(),
+        &"server.test".parse().unwrap(),
+        &key,
+        ca.as_ref(),
+        &ca_key,
         1,
         &[] as &[String],
     )
     .unwrap();
-    let fullchain =
-        String::from_utf8([ca.clone(), server.clone()].concat()).unwrap();
+    let fullchain = formatters::certificate_chain_to_pem(
+        &[ca.as_ref(), server.as_ref()].concat(),
+    )
+    .unwrap();
     let request = |issuer| ImportCertificateRequest {
         issuer,
         certificate_chain_pem: fullchain.clone(),
@@ -199,9 +204,13 @@ async fn acme_import_is_rejected_but_existing_material_can_be_exported() {
         store.servers_for_certificate("server.test").await.unwrap().is_empty()
     );
     // Material from the separate issuance/local CLI path remains exportable.
-    let root_plan =
-        transfer::plan_import(&ca, ca_key.serialize_pem().as_bytes(), &[])
-            .unwrap();
+    let ca_pem = formatters::certificate_chain_to_pem(ca.as_ref()).unwrap();
+    let root_plan = transfer::plan_import(
+        ca_pem.as_bytes(),
+        ca_key.serialize_pem().as_bytes(),
+        &[],
+    )
+    .unwrap();
     let plan = transfer::plan_import(
         fullchain.as_bytes(),
         key.serialize_pem().as_bytes(),
@@ -211,19 +220,20 @@ async fn acme_import_is_rejected_but_existing_material_can_be_exported() {
         }],
     )
     .unwrap();
+    let aliases: Vec<String> = plan.aliases.into();
     store
         .insert_certificate(
             NewCertificate {
                 kind: plan.kind,
                 issuer_id: Some(issuer.id),
-                cn: plan.common_name,
+                cn: plan.common_name.into(),
                 certs_der: plan.certs_der,
                 key_der: plan.key_der,
                 expires_at: plan.expires_at,
                 issued_at: plan.issued_at,
                 enabled: true,
             },
-            &plan.aliases,
+            &aliases,
             1,
         )
         .await

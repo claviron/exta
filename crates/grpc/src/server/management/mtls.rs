@@ -20,7 +20,7 @@ use claviron::hosting::{
 };
 use claviron::runtime::AppState;
 use claviron::ssl::parsers::take_first_cert_from_der;
-use claviron::ssl::{Host, KeyString};
+use claviron::ssl::{CommonName, Host, Organization};
 use claviron::tls::{CertAuthority, CertSigner, CertificateStore};
 use time::OffsetDateTime;
 use tonic::Status;
@@ -124,7 +124,7 @@ impl MtlsManager {
     ) -> Result<CertificateInfo, Status> {
         let name = request
             .common_name
-            .parse::<claviron::ssl::CommonName>()
+            .parse::<CommonName>()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let hosted = self
             .store
@@ -156,7 +156,7 @@ impl MtlsManager {
     ) -> Result<CertificateInfo, Status> {
         let name = request
             .common_name
-            .parse::<claviron::ssl::CommonName>()
+            .parse::<CommonName>()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let hosted = self
             .store
@@ -405,13 +405,10 @@ impl MtlsManager {
         use claviron::ssl::formatters::certificate_chain_to_pem;
 
         let (actor, subject) = user.into_parts();
-        let name = actor
-            .auth_identifier()
-            .parse::<claviron::ssl::CommonName>()
-            .map_err(|_| {
+        let name =
+            actor.auth_identifier().parse::<CommonName>().map_err(|_| {
                 Status::failed_precondition("invalid registration identity")
-            })?
-            .into_string();
+            })?;
         let permissions = if subject.is_some() {
             let mut catalog = PermissionCatalog::new();
             catalog
@@ -473,7 +470,7 @@ impl MtlsManager {
             Err(error) if error.code() == tonic::Code::AlreadyExists => {
                 let Some(saved) = self
                     .store
-                    .certificate_by_cn(&name)
+                    .certificate_by_cn(name.as_str())
                     .await
                     .map_err(storage_status)?
                 else {
@@ -512,20 +509,22 @@ impl MtlsManager {
         let hosting = &self.store;
         let signing_name = name.clone();
         let material = tokio::task::spawn_blocking(move || {
-            use claviron::ssl::{generators, parsers};
+            use claviron::ssl::generators;
             let key = generators::generate_ca_key()?;
+            let organization = Organization {
+                name: request.organization.unwrap_or_default().into_boxed_str(),
+                country: request.country.unwrap_or_default().into_boxed_str(),
+                ..Default::default()
+            };
             let certificate = generators::generate_ca_cert(
                 &signing_name,
-                key.serialize_pem().as_bytes(),
+                &key,
                 request.validity_days,
-                request.organization.as_deref(),
-                request.country.as_deref(),
+                &organization,
             )?;
             Ok::<_, claviron::ssl::SSLError>(
                 claviron::tls::authority::IssuedCertificate {
-                    certs_der: parsers::concat_chain_bytes_from_pem(
-                        &certificate,
-                    )?,
+                    certs_der: certificate.to_vec(),
                     key_der: key.serialize_der(),
                 },
             )
@@ -537,7 +536,7 @@ impl MtlsManager {
             hosting,
             CertificateKind::Ca,
             name.clone(),
-            vec![name],
+            vec![name.into()],
             None,
             None,
             material,
@@ -597,7 +596,7 @@ impl MtlsManager {
             (managed.signer.clone(), managed.issuer_id())
         };
         if hosting
-            .certificate_by_cn(&name)
+            .certificate_by_cn(name.as_str())
             .await
             .map_err(storage_status)?
             .is_some()
@@ -700,24 +699,14 @@ async fn register_file_issuer(
                 "file authority must include its root CA",
             ));
         }
-        let name = certificate
-            .subject()
-            .iter_common_name()
-            .next()
-            .and_then(|attribute| attribute.as_str().ok())
-            .ok_or_else(|| {
-                Status::failed_precondition("authority has no common name")
-            })?
-            .parse::<claviron::ssl::CommonName>()
+        let name = CommonName::read(certificate.subject())
             .map_err(|_| {
                 Status::failed_precondition("invalid authority common name")
+            })?
+            .ok_or_else(|| {
+                Status::failed_precondition("authority has no common name")
             })?;
-        if store
-            .issuer_by_name(name.as_str())
-            .await
-            .map_err(storage_status)?
-            .is_none()
-        {
+        if store.issuer_by_name(name).await.map_err(storage_status)?.is_none() {
             let material = claviron::tls::IssuedCertificate {
                 certs_der: roots[index..]
                     .iter()
@@ -728,7 +717,9 @@ async fn register_file_issuer(
             match persist(
                 store,
                 CertificateKind::Ca,
-                name.as_str().to_owned(),
+                name.parse().map_err(|_| {
+                    Status::failed_precondition("invalid authority common name")
+                })?,
                 Vec::new(),
                 parent,
                 None,
@@ -741,7 +732,7 @@ async fn register_file_issuer(
                 Err(error) => return Err(error),
             }
         }
-        let issuer = CertAuthority::from_issuer(store, name.as_str())
+        let issuer = CertAuthority::from_issuer(store, name)
             .await
             .map_err(|error| Status::failed_precondition(error.to_string()))?;
         if issuer.roots() != &roots[index..] {
@@ -776,10 +767,10 @@ fn same_registration_identity(
 fn identity(
     raw: &str,
     kind: CertificateKind,
-) -> Result<String, Status> {
+) -> Result<CommonName, Status> {
     let host = raw.parse::<Host>().map_err(|_| Status::invalid_argument("certificate names and aliases must be valid DNS names, IP addresses or bare names"))?;
-    let name = host.key_string();
-    if kind != CertificateKind::Server && name.starts_with("*.") {
+    let name = CommonName::from(&host);
+    if kind != CertificateKind::Server && name.as_str().starts_with("*.") {
         return Err(Status::invalid_argument(
             "client and CA identities must not be wildcards",
         ));
@@ -788,7 +779,7 @@ fn identity(
 }
 
 struct IssuanceRequest {
-    name: String,
+    name: CommonName,
     aliases: Vec<String>,
     validity_days: u32,
     kind: CertificateKind,
@@ -871,11 +862,11 @@ fn input(request: CreateCertificateRequest) -> Result<IssuanceRequest, Status> {
         })
         .transpose()?;
     let name = identity(&request.common_name, kind)?;
-    let mut aliases = vec![name.clone()];
+    let mut aliases = vec![String::from(&name)];
     for alias in request.aliases {
         let alias = identity(&alias, kind)?;
-        if !aliases.contains(&alias) {
-            aliases.push(alias);
+        if !aliases.iter().any(|existing| existing == alias.as_str()) {
+            aliases.push(alias.into());
         }
     }
     Ok(IssuanceRequest {
@@ -923,7 +914,7 @@ fn storage_status(error: HostingError) -> Status {
 async fn persist(
     hosting: &HostingStore,
     kind: CertificateKind,
-    common_name: String,
+    common_name: CommonName,
     aliases: Vec<String>,
     issuer_id: Option<i32>,
     server_id: Option<i32>,
@@ -943,7 +934,7 @@ async fn persist(
     let new = NewCertificate {
         kind,
         issuer_id,
-        cn: common_name,
+        cn: common_name.into(),
         certs_der: material.certs_der,
         key_der: material.key_der,
         issued_at,

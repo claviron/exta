@@ -125,7 +125,7 @@ impl Account {
             key_path,
             certs_dir,
             alg,
-            contact: cfg.organization().email.clone(),
+            contact: cfg.organization().email().to_owned(),
             mode: *mode,
             tos_agreed: false,
             jwk: AcmeJwk::default(),

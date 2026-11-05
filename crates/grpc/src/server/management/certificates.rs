@@ -103,7 +103,7 @@ impl CertificateManager {
             ));
         }
         if store
-            .certificate_by_cn(&plan.common_name)
+            .certificate_by_cn(plan.common_name.as_str())
             .await
             .map_err(storage_status)?
             .is_some()
@@ -116,22 +116,23 @@ impl CertificateManager {
         let new = NewCertificate {
             kind: plan.kind,
             issuer_id: plan.issuer_id,
-            cn: plan.common_name,
+            cn: plan.common_name.into(),
             certs_der: plan.certs_der,
             key_der: plan.key_der,
             expires_at: plan.expires_at,
             issued_at: plan.issued_at,
             enabled: true,
         };
+        let aliases: Vec<String> = plan.aliases.into();
         let saved = if plan.kind == CertificateKind::Server {
             let id = server_id.ok_or_else(|| {
                 Status::failed_precondition(
                     "server identity is not initialized",
                 )
             })?;
-            store.insert_certificate(new, &plan.aliases, id).await
+            store.insert_certificate(new, &aliases, id).await
         } else {
-            store.insert_unassigned_certificate(new, &plan.aliases).await
+            store.insert_unassigned_certificate(new, &aliases).await
         }
         .map_err(storage_status)?;
         Ok(transfer_info(saved, issuer))

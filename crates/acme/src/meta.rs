@@ -79,12 +79,11 @@ impl CertMeta {
         let aliases = Aliases::try_from(&cert)?;
 
         let org = Organization::try_from(&cert)?;
-        // Organization (O) — ASCII only
-        let organization = org.to_org_name();
+        let organization = org.name.into_string();
 
         // Issuer CN
         let issuer = Issuer::try_from(&cert)?;
-        let issued_by = issuer.to_cname();
+        let issued_by = issuer.cn.unwrap_or_default().to_owned();
 
         // Validity
         let valid_until = cert.validity().not_after.to_datetime();
@@ -138,7 +137,7 @@ impl CertMeta {
 
         // Issuer CN
         let issuer = Issuer::try_from(&cert)?;
-        self.issued_by = issuer.to_cname();
+        self.issued_by = issuer.cn.unwrap_or_default().to_owned();
         // Validity
         self.valid_until = cert.validity().not_after.to_datetime();
 

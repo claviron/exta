@@ -142,7 +142,7 @@ async fn http01_request_rejects_traversal_and_cleans_up_errors_and_cancellation(
         let csr_key = generators::generate_private_key().unwrap();
         let csr = generators::generate_server_csr(
             &csr_key,
-            "example.test",
+            &"example.test".parse().unwrap(),
             vec!["example.test".into()],
             &Organization::default(),
         )
