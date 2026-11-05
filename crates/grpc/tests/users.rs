@@ -862,7 +862,6 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
     let handler = crate::server::other::ManagementGrpcHandler::with_routes(
         routes,
         "management.example.test".into(),
-        service.state,
     );
     let payload =
         wire::GetSchemaRequest { resource: wire::Resource::User.into() }
@@ -878,7 +877,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
         .header("x-user-id", "attacker")
         .body(claviron::http::bytes_body(frame.into()))
         .unwrap();
-    request.extensions_mut().insert(Arc::new(ConnCtx {
+    let mut connection = ConnCtx {
         state: Default::default(),
         listener: "management".parse().unwrap(),
         proto: Some(claviron::tls::Proto::H2),
@@ -892,14 +891,23 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
             cipher_suite: None,
             client_auth: ClientAuthStatus::Verified,
             client_cert: Some(Arc::new(PeerIdentity {
-                    certificate: Arc::from([]),
-                    subject_dn: "CN=operator".into(),
-                    issuer_dn: "CN=example CA".into(),
-                    common_names: Box::new(["operator".into()]),
-                    subject_uris: Box::new([]),
-                })),
+                certificate: Arc::from([]),
+                subject_dn: "CN=operator".into(),
+                issuer_dn: "CN=example CA".into(),
+                common_names: Box::new(["operator".into()]),
+                subject_uris: Box::new([]),
+            })),
         }),
-    }));
+    };
+    // Stand in for the edge: prepare the connection as its acceptance would.
+    let mut conn = claviron::http::ext::ConnStateBuilder::default();
+    crate::server::other::prepare_connection(
+        &service.state,
+        &connection,
+        &mut conn,
+    );
+    connection.state = conn.build();
+    request.extensions_mut().insert(Arc::new(connection));
     let response = handler.call(request).await.unwrap();
     let body = response.into_body().collect().await.unwrap();
     assert_eq!(body.trailers().unwrap().get("grpc-status").unwrap(), "0");

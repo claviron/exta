@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use claviron::edge::OtherHandler;
 use claviron::http::deadline::head_within;
-use claviron::http::ext::ConnCtx;
+use claviron::http::ext::{ClientAuthStatus, ConnCtx, ConnStateBuilder};
 use claviron::http::policy::HttpPolicy;
 use claviron::http::{RouteBody, RouteFuture, RouteResponse, boxed_body};
 use claviron::runtime::AppState;
@@ -18,16 +18,14 @@ use super::services::ManagementTransport;
 pub(crate) struct ManagementGrpcHandler {
     routes: tonic::service::Routes,
     auth_guard: AuthGuard,
-    state: AppState,
 }
 
 impl ManagementGrpcHandler {
     pub(crate) fn with_routes(
         routes: tonic::service::Routes,
         host: String,
-        state: AppState,
     ) -> Self {
-        Self { routes, auth_guard: AuthGuard { host }, state }
+        Self { routes, auth_guard: AuthGuard { host } }
     }
 }
 
@@ -60,16 +58,8 @@ impl OtherHandler for ManagementGrpcHandler {
 
         let conn_ctx = req.extensions().get::<Arc<ConnCtx>>();
         let client_cert_present =
-            conn_ctx.and_then(|ctx| ctx.tls.as_ref()).is_some_and(|tls| {
-                matches!(
-                    tls.client_auth,
-                    claviron::http::ext::ClientAuthStatus::Verified
-                ) && tls.client_cert.is_some()
-            });
+            conn_ctx.is_some_and(|ctx| verified_peer(ctx).is_some());
         let conn_info = conn_ctx.map(|ctx| Arc::new(conn_info_from_ctx(ctx)));
-        let peer = conn_ctx
-            .and_then(|ctx| ctx.tls.as_ref())
-            .and_then(|tls| tls.client_cert.clone());
         if let Some(status) =
             self.auth_guard.connection_status(client_cert_present)
         {
@@ -80,9 +70,20 @@ impl OtherHandler for ManagementGrpcHandler {
 
         let conn_ctx = conn_ctx
             .expect("verified client certificate requires connection context");
-        let session = conn_ctx.state.get_or_insert_with(|| {
-            super::access::Session::new(self.state.clone(), peer)
-        });
+        // Prepared once, when the connection was accepted; every request of
+        // the connection shares its decision.
+        let Some(session) =
+            conn_ctx.state.get::<Arc<super::access::Session>>().cloned()
+        else {
+            return Box::pin(async move {
+                Ok(status_response(
+                    Status::internal(
+                        "no management session was prepared when this connection was accepted",
+                    ),
+                    version,
+                ))
+            });
+        };
         let transport = ManagementTransport(conn_ctx.listener.clone());
         if let Some(conn_info) = conn_info {
             req.extensions_mut().insert(conn_info);
@@ -119,6 +120,33 @@ impl OtherHandler for ManagementGrpcHandler {
                 )),
             }
         })
+    }
+}
+
+/// The peer whose client certificate the handshake verified.
+fn verified_peer(
+    connection: &ConnCtx
+) -> Option<Arc<claviron::ssl::peer::PeerIdentity>> {
+    let tls = connection.tls.as_ref()?;
+    matches!(tls.client_auth, ClientAuthStatus::Verified)
+        .then(|| tls.client_cert.clone())
+        .flatten()
+}
+
+/// What a management connection keeps for its requests: the access session
+/// of the peer its handshake verified. Runs once, when the connection is
+/// accepted; the session resolves its decision on first use and every
+/// request of the connection shares it.
+pub(crate) fn prepare_connection(
+    state: &AppState,
+    connection: &ConnCtx,
+    conn: &mut ConnStateBuilder,
+) {
+    if let Some(peer) = verified_peer(connection) {
+        conn.insert(Arc::new(super::access::Session::new(
+            state.clone(),
+            Some(peer),
+        )));
     }
 }
 
@@ -161,14 +189,13 @@ fn status_response(
 }
 
 fn conn_info_from_ctx(ctx: &ConnCtx) -> ConnInfo {
-    let client_cn = ctx
-        .tls
-        .as_ref()
-        .and_then(|tls| tls.client_cert.as_ref())
-        .and_then(|identity| match &*identity.common_names {
-            [name] => Some(name.to_string()),
-            _ => None,
-        });
+    let client_cn =
+        ctx.tls.as_ref().and_then(|tls| tls.client_cert.as_ref()).and_then(
+            |identity| match &*identity.common_names {
+                [name] => Some(name.to_string()),
+                _ => None,
+            },
+        );
 
     ConnInfo { addr: ctx.remote, client_cn }
 }

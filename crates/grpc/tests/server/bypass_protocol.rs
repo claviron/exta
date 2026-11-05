@@ -25,21 +25,38 @@ impl Greeter for Echo {
 }
 
 fn handler() -> ManagementGrpcHandler {
-    handler_for(claviron::runtime::AppState::standalone(
-        "grpc-admission-test",
-        ".",
-    ))
-}
-
-fn handler_for(state: claviron::runtime::AppState) -> ManagementGrpcHandler {
     ManagementGrpcHandler::with_routes(
         tonic::service::Routes::new(GreeterServer::new(Echo)).prepare(),
         "management.example.test".to_owned(),
-        state,
     )
 }
 
+/// A request on a connection accepted for a state with nothing registered.
 fn request(
+    version: http::Version,
+    verified: bool,
+) -> Request<RouteBody> {
+    let state =
+        claviron::runtime::AppState::standalone("grpc-admission-test", ".");
+    accepted(&state, unaccepted(version, verified))
+}
+
+/// Stand in for the edge: prepare the request's connection as its acceptance
+/// under `state` would, so its requests find what the handler reads.
+fn accepted(
+    state: &claviron::runtime::AppState,
+    mut request: Request<RouteBody>,
+) -> Request<RouteBody> {
+    let mut connection =
+        ConnCtx::clone(request.extensions().get::<Arc<ConnCtx>>().unwrap());
+    let mut conn = claviron::http::ext::ConnStateBuilder::default();
+    prepare_connection(state, &connection, &mut conn);
+    connection.state = conn.build();
+    request.extensions_mut().insert(Arc::new(connection));
+    request
+}
+
+fn unaccepted(
     version: http::Version,
     verified: bool,
 ) -> Request<RouteBody> {
@@ -74,12 +91,12 @@ fn request(
                 ClientAuthStatus::NotProvided
             },
             client_cert: Some(Arc::new(claviron::ssl::peer::PeerIdentity {
-                    certificate: Arc::from([]),
-                    subject_dn: "CN=operator".into(),
-                    issuer_dn: "CN=example CA".into(),
-                    common_names: Box::new(["operator".into()]),
-                    subject_uris: Box::new(["urn:example:subject:one".into()]),
-                })),
+                certificate: Arc::from([]),
+                subject_dn: "CN=operator".into(),
+                issuer_dn: "CN=example CA".into(),
+                common_names: Box::new(["operator".into()]),
+                subject_uris: Box::new(["urn:example:subject:one".into()]),
+            })),
         }),
     }));
     request
@@ -134,16 +151,17 @@ async fn grpc_response_head_uses_the_effective_http_deadline() {
 
     let state = AppState::standalone("grpc-deadline-test", ".");
     state.registry_ref().insert(Arc::new(PendingAdmission)).unwrap();
-    state.registry_ref()
+    state
+        .registry_ref()
         .bind_dyn::<dyn crate::access::GrpcAccessPolicy, PendingAdmission>(
             |value| value,
         )
         .unwrap();
-    let mut request = request(http::Version::HTTP_2, true);
+    let mut request = accepted(&state, unaccepted(http::Version::HTTP_2, true));
     let mut policy = HttpPolicy::unlimited();
     policy.requests.head_timeout = Some(std::time::Duration::ZERO);
     request.extensions_mut().insert(policy);
-    let response = handler_for(state).call(request).await.unwrap();
+    let response = handler().call(request).await.unwrap();
     assert_eq!(response.headers()["grpc-status"], "4");
 }
 
@@ -189,8 +207,8 @@ async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnec
                 |value| value,
             )
             .unwrap();
-        let handler = handler_for(state);
-        let first = request(version, true);
+        let handler = handler();
+        let first = accepted(&state, unaccepted(version, true));
         let connection =
             first.extensions().get::<Arc<ConnCtx>>().unwrap().clone();
         let response = handler.call(first).await.unwrap();
@@ -202,7 +220,7 @@ async fn grpc_access_policy_is_shared_by_h2_h3_connection_and_resets_on_reconnec
         assert!(!response.headers().contains_key("grpc-status"));
         assert_eq!(policy.calls.load(Ordering::SeqCst), 1);
 
-        let denied = request(version, true);
+        let denied = accepted(&state, unaccepted(version, true));
         let denied_connection =
             denied.extensions().get::<Arc<ConnCtx>>().unwrap().clone();
         let response = handler.call(denied).await.unwrap();

@@ -58,7 +58,7 @@ impl GrpcServiceProvider {
                 Some(super::service::create_management_routes(state.clone())?);
         }
         let routes = routes.as_ref().expect("prepared routes");
-        Ok(ManagementGrpcHandler::with_routes(routes.clone(), host, state))
+        Ok(ManagementGrpcHandler::with_routes(routes.clone(), host))
     }
 }
 
@@ -69,6 +69,21 @@ impl Register<AppState> for GrpcServiceProvider {
         claviron::edge::register_host_binding_provider(
             state,
             provider.clone(),
+        )?;
+        // A management connection's access session is prepared once, when the
+        // connection is accepted, and read by each of its requests.
+        let (hosts, accepting) = (provider.clone(), state.clone());
+        claviron::edge::register_accept_layer(
+            state,
+            move |host, _, _| hosts.config().vhosts().contains(host),
+            move |accepted: &claviron::edge::Accepted<'_>,
+                  conn: &mut claviron::http::ext::ConnStateBuilder| {
+                super::other::prepare_connection(
+                    &accepting,
+                    accepted.connection,
+                    conn,
+                )
+            },
         )?;
         #[cfg(feature = "registration")]
         super::management::registration::register_routes(state, provider)?;
