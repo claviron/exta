@@ -304,8 +304,9 @@ async fn ca_server_and_client_material_stays_in_database() {
         );
         if kind == CertificateKind::Client {
             assert_eq!(
-                peer.subject_uris,
+                *peer.subject_uris,
                 ["urn:uuid:00000000-0000-4000-8000-000000000007"]
+                    .map(Box::<str>::from)
             );
         }
 

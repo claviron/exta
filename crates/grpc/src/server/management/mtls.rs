@@ -187,7 +187,7 @@ impl MtlsManager {
                 )
             })?;
         if let Some(scope) = claviron::ssl::permission::from_uris(
-            peer.subject_uris.iter().map(String::as_str),
+            peer.subject_uris.iter().map(|uri| &**uri),
         )
         .map_err(|error| Status::failed_precondition(error.to_string()))?
         {
@@ -967,7 +967,7 @@ fn metadata(saved: HostedCertificate) -> Result<CertificateInfo, Status> {
             )
         })?;
     let permissions = claviron::ssl::permission::from_uris(
-        peer.subject_uris.iter().map(String::as_str),
+        peer.subject_uris.iter().map(|uri| &**uri),
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?
     .map(|scope| crate::proto::mtls::CertificatePermissions {
@@ -975,7 +975,12 @@ fn metadata(saved: HostedCertificate) -> Result<CertificateInfo, Status> {
     });
     Ok(CertificateInfo {
         permissions,
-        subject_uris: peer.subject_uris,
+        subject_uris: peer
+            .subject_uris
+            .into_vec()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         id: cert.id,
         issuer_id: cert.issuer_id,
         kind: match cert.kind {

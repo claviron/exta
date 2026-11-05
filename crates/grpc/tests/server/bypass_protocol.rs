@@ -3,7 +3,7 @@ use crate::server::greeter::helloworld::{
     HelloReply, HelloRequest,
     greeter_server::{Greeter, GreeterServer},
 };
-use claviron::http::ext::{ClientAuthStatus, TlsClientCertInfo, TlsInfo};
+use claviron::http::ext::{ClientAuthStatus, TlsInfo};
 use prost::Message;
 
 struct Echo;
@@ -73,17 +73,13 @@ fn request(
             } else {
                 ClientAuthStatus::NotProvided
             },
-            client_cert: Some(TlsClientCertInfo {
-                subject_dn: "CN=operator".to_owned(),
-                issuer_dn: "CN=example CA".to_owned(),
-                identity: Some(Arc::new(claviron::ssl::peer::PeerIdentity {
+            client_cert: Some(Arc::new(claviron::ssl::peer::PeerIdentity {
                     certificate: Arc::from([]),
                     subject_dn: "CN=operator".into(),
                     issuer_dn: "CN=example CA".into(),
-                    common_names: vec!["operator".into()],
-                    subject_uris: vec!["urn:example:subject:one".into()],
+                    common_names: Box::new(["operator".into()]),
+                    subject_uris: Box::new(["urn:example:subject:one".into()]),
                 })),
-            }),
         }),
     }));
     request
@@ -165,7 +161,10 @@ impl crate::access::GrpcAccessPolicy for AccessCheck {
         crate::access::AccessError,
     > {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(peer.subject_uris, ["urn:example:subject:one"]);
+        assert_eq!(
+            *peer.subject_uris,
+            ["urn:example:subject:one"].map(Box::<str>::from)
+        );
         if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
             Ok(None)
         } else {

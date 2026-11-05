@@ -30,7 +30,7 @@ impl GrpcAccessPolicy for Policy {
         peer: &PeerIdentity,
     ) -> Result<Option<AnyAuthenticated>, AccessError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(peer.common_names, ["operator"]);
+        assert_eq!(*peer.common_names, ["operator"].map(Box::<str>::from));
         self.result.lock().unwrap().take().expect("one admission per session")
     }
 }
@@ -39,8 +39,8 @@ fn peer() -> PeerIdentity {
         certificate: Arc::from([]),
         subject_dn: "CN=operator".into(),
         issuer_dn: "CN=example CA".into(),
-        common_names: vec!["operator".into()],
-        subject_uris: vec![],
+        common_names: Box::new(["operator".into()]),
+        subject_uris: Box::new([]),
     }
 }
 fn bind(

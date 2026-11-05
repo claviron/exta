@@ -69,8 +69,7 @@ impl OtherHandler for ManagementGrpcHandler {
         let conn_info = conn_ctx.map(|ctx| Arc::new(conn_info_from_ctx(ctx)));
         let peer = conn_ctx
             .and_then(|ctx| ctx.tls.as_ref())
-            .and_then(|tls| tls.client_cert.as_ref())
-            .and_then(|cert| cert.identity.clone());
+            .and_then(|tls| tls.client_cert.clone());
         if let Some(status) =
             self.auth_guard.connection_status(client_cert_present)
         {
@@ -166,9 +165,8 @@ fn conn_info_from_ctx(ctx: &ConnCtx) -> ConnInfo {
         .tls
         .as_ref()
         .and_then(|tls| tls.client_cert.as_ref())
-        .and_then(|cert| cert.identity.as_ref())
-        .and_then(|identity| match identity.common_names.as_slice() {
-            [name] => Some(name.clone()),
+        .and_then(|identity| match &*identity.common_names {
+            [name] => Some(name.to_string()),
             _ => None,
         });
 

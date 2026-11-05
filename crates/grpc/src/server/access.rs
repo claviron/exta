@@ -29,8 +29,8 @@ impl Session {
     ) -> Self {
         let decision = async move {
             let client_cn = peer.as_ref().and_then(|peer| {
-                match peer.common_names.as_slice() {
-                    [name] => Some(name.as_str()),
+                match &*peer.common_names {
+                    [name] => Some(&**name),
                     _ => None,
                 }
             });

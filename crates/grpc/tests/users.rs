@@ -829,9 +829,7 @@ async fn management_single_tonic_service_routes_both_capabilities() {
 async fn management_gateway_supplies_the_policy_bound_actor_once() {
     use crate::access::{AccessError, GrpcAccessPolicy};
     use claviron::edge::OtherHandler;
-    use claviron::http::ext::{
-        ClientAuthStatus, ConnCtx, TlsClientCertInfo, TlsInfo,
-    };
+    use claviron::http::ext::{ClientAuthStatus, ConnCtx, TlsInfo};
     use claviron::ssl::peer::PeerIdentity;
     use http_body_util::BodyExt;
     use prost::Message;
@@ -845,7 +843,7 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
             peer: &PeerIdentity,
         ) -> Result<Option<AnyAuthenticated>, AccessError> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(peer.common_names, ["operator"]);
+            assert_eq!(*peer.common_names, ["operator"].map(Box::<str>::from));
             Ok(Some(Arc::new(Actor("policy-subject"))))
         }
     }
@@ -893,17 +891,13 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
             protocol_version: None,
             cipher_suite: None,
             client_auth: ClientAuthStatus::Verified,
-            client_cert: Some(TlsClientCertInfo {
-                subject_dn: "CN=operator".into(),
-                issuer_dn: "CN=example CA".into(),
-                identity: Some(Arc::new(PeerIdentity {
+            client_cert: Some(Arc::new(PeerIdentity {
                     certificate: Arc::from([]),
                     subject_dn: "CN=operator".into(),
                     issuer_dn: "CN=example CA".into(),
-                    common_names: vec!["operator".into()],
-                    subject_uris: vec![],
+                    common_names: Box::new(["operator".into()]),
+                    subject_uris: Box::new([]),
                 })),
-            }),
         }),
     }));
     let response = handler.call(request).await.unwrap();
