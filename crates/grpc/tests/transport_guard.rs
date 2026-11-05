@@ -20,7 +20,12 @@ fn management_cannot_stop_or_restart_its_own_transport() {
 fn management_can_control_other_transport_and_missing_ownership_fails_closed() {
     let owner = ManagementTransport("management".parse().unwrap());
     for action in [ServiceAction::Stop, ServiceAction::Restart] {
-        assert!(command_transport(Some(&owner), "Listener:public-tls", action).is_ok());
-        assert!(command_transport(None, "Listener:public-tls", action).is_err());
+        assert!(
+            command_transport(Some(&owner), "Listener:public-tls", action)
+                .is_ok()
+        );
+        assert!(
+            command_transport(None, "Listener:public-tls", action).is_err()
+        );
     }
 }

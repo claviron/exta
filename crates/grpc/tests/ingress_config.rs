@@ -19,7 +19,6 @@ fn absence_binds_nothing_and_retired_auth_switches_are_rejected() {
     }
 }
 
-
 #[test]
 fn canonical_vhost_keys_can_be_declared_as_one_or_many() {
     for config in ["vhost: management", "vhosts: [management]"] {

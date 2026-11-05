@@ -39,7 +39,10 @@ pub struct ServiceManagerService {
 pub(crate) struct ManagementTransport(pub(crate) ListenerId);
 
 impl ManagementTransport {
-    fn owns(&self, name: &str) -> bool {
+    fn owns(
+        &self,
+        name: &str,
+    ) -> bool {
         name.strip_prefix("Listener:") == Some(self.0.as_str())
     }
 }
