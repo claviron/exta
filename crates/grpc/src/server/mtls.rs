@@ -2,7 +2,7 @@
 use claviron::runtime::AppState;
 use tonic::{Request, Response, Status};
 
-use crate::mtls_manager::MtlsManager as IssuanceManager;
+use super::management::mtls::MtlsManager as IssuanceManager;
 use crate::proto::mtls::mtls_manager_server::{MtlsManager, MtlsManagerServer};
 use crate::proto::mtls::{
     CertificateInfo, CreateCertificateRequest, CreateRootCaRequest,

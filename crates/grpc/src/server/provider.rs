@@ -12,10 +12,8 @@ use claviron::runtime::registry::{
     Component, Error, Reloadable, Result, priority,
 };
 use claviron::runtime::{AppState, Register};
-use tokio::sync::Semaphore;
 
 use super::config::{CONFIG_FILE, GrpcConfig};
-use super::dedicated::GrpcListener;
 use super::other::ManagementGrpcHandler;
 
 /// The owner of `grpc.yaml`: binds the management service to the vhost keys the
@@ -24,8 +22,7 @@ use super::other::ManagementGrpcHandler;
 pub struct GrpcServiceProvider {
     config_path: PathBuf,
     config: RwLock<Arc<GrpcConfig>>,
-    // One route set and request budget per process, shared by every ingress.
-    routes: RwLock<Option<(tonic::service::Routes, Arc<Semaphore>)>>,
+    routes: RwLock<Option<tonic::service::Routes>>,
 }
 
 impl GrpcServiceProvider {
@@ -41,15 +38,8 @@ impl GrpcServiceProvider {
         &self,
         cfg: &GrpcConfig,
     ) {
-        let mut config =
-            self.config.write().expect("grpc config lock poisoned");
-        if config.max_requests != cfg.max_requests
-            && let Some((_, permits)) =
-                self.routes.write().expect("grpc routes lock poisoned").as_mut()
-        {
-            *permits = Arc::new(Semaphore::new(cfg.max_requests));
-        }
-        *config = Arc::new(cfg.clone());
+        *self.config.write().expect("grpc config lock poisoned") =
+            Arc::new(cfg.clone());
     }
 
     pub(crate) fn config(&self) -> Arc<GrpcConfig> {
@@ -59,37 +49,30 @@ impl GrpcServiceProvider {
     pub(crate) fn handler(
         &self,
         state: AppState,
-        cfg: &GrpcConfig,
         host: String,
     ) -> Result<ManagementGrpcHandler> {
         let mut routes =
             self.routes.write().expect("grpc routes lock poisoned");
         if routes.is_none() {
-            *routes = Some((
-                super::service::create_management_routes(state.clone())?,
-                Arc::new(Semaphore::new(cfg.max_requests)),
-            ));
+            *routes =
+                Some(super::service::create_management_routes(state.clone())?);
         }
-        let (routes, permits) = routes.as_ref().expect("prepared routes");
-        Ok(ManagementGrpcHandler::with_routes(
-            routes.clone(),
-            permits.clone(),
-            cfg,
-            host,
-            state,
-        ))
+        let routes = routes.as_ref().expect("prepared routes");
+        Ok(ManagementGrpcHandler::with_routes(routes.clone(), host, state))
     }
 }
 
 impl Register<AppState> for GrpcServiceProvider {
     fn register(state: &AppState) -> Result<()> {
         state.bind_config_environment::<Self>()?;
-        let service = Arc::new(Self::new(state));
-        claviron::edge::register_host_binding_provider(state, service.clone())?;
-        state
-            .registry_ref()
-            .register(Arc::new(GrpcListener::new(service)))
-            .map(|_| ())
+        let provider = Arc::new(Self::new(state));
+        claviron::edge::register_host_binding_provider(
+            state,
+            provider.clone(),
+        )?;
+        #[cfg(feature = "registration")]
+        super::management::registration::register_routes(state, provider)?;
+        Ok(())
     }
 }
 
@@ -122,11 +105,25 @@ impl Configurable for GrpcServiceProvider {
         Some(GrpcConfig::default())
     }
 
+    #[cfg(feature = "registration")]
     fn validate_config(
         &self,
         config: &GrpcConfig,
     ) -> congif::Result<()> {
-        config.validate().map_err(congif::Error::invalid)
+        if config.registration.iter().any(|host| config.vhosts().contains(host))
+        {
+            return Err(congif::Error::invalid(
+                "gRPC registration and management require different vhosts",
+            ));
+        }
+        if !config.registration.is_empty()
+            && config.registration_validity_days.is_none()
+        {
+            return Err(congif::Error::invalid(
+                "registration_validity_days is required for registration",
+            ));
+        }
+        Ok(())
     }
 
     async fn configure(
@@ -186,7 +183,6 @@ impl HostBindingProvider for GrpcServiceProvider {
         key: &Host,
         host: Arc<HostConfig>,
     ) -> Result<Option<RouteBinding>> {
-        let cfg = self.config();
         let host_key = key.to_string();
         let host_client_auth_required =
             host.tls_policy().client_auth.is_required();
@@ -202,7 +198,7 @@ impl HostBindingProvider for GrpcServiceProvider {
                     state.registry_ref().resolve::<Self>().ok_or_else(
                         || Error::msg("GrpcServiceProvider is not registered"),
                     )?;
-                let handler = service.handler(state, &cfg, host_key.clone())?;
+                let handler = service.handler(state, host_key.clone())?;
                 Ok(OtherService::new(handler))
             },
         );

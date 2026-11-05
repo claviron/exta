@@ -1,9 +1,8 @@
 # claviron-grpc
 
 Typed, mTLS-secured administration for
-[Claviron](https://crates.io/crates/claviron). Serve management RPCs on a dedicated
-HTTP/2 listener, an exclusive HTTP/2 or HTTP/3 Edge vhost, or both, using the same prepared Tonic
-service set.
+[Claviron](https://crates.io/crates/claviron). Serve management RPCs on Edge
+vhosts over HTTP/2 or HTTP/3.
 
 Generated protobuf messages, service definitions, and client stubs are available
 without enabling the management server. Clients own their channel and TLS setup.
@@ -25,7 +24,8 @@ Default features are empty.
 
 | Feature | Adds |
 | --- | --- |
-| `server` | Provider, configuration, dedicated listener, and vhost management serving. |
+| `server` | Provider and management serving on Edge vhosts. |
+| `registration` | HTTPS enrollment of device-owned mTLS keys through an application guard. |
 | `workers` | Worker inspection, lifecycle commands, rolling restart, and fleet resize; includes `server`. |
 | `tasks` | Task-management routes when combined with `server`, plus Claviron's task capability. |
 | `acme` | ACME persistence dependency and ACME RPCs when combined with `server`. |
@@ -81,7 +81,7 @@ performs a new admission.
 The accepting transport validates the certificate before providing its exact
 public leaf DER, structured CNs and URI SAN candidates in `PeerIdentity`.
 The policy receives only the verified `claviron::ssl::peer::PeerIdentity`;
-there is no client-selected service or target. Dedicated H2 and Edge H2/H3 use the same session
+there is no client-selected service or target. Edge H2 and H3 use the same session
 admission, including reflection and capability discovery. Concurrent RPCs share
 the same pending decision. Cancelling one RPC does not restart validation.
 
@@ -179,8 +179,6 @@ provide either manager; omitted capabilities must not load or require the other.
 
 ```yaml
 vhosts: [management]
-request_timeout: 30s
-max_requests: 100
 ```
 
 `management` is a canonical vhost key. Its existing Edge policy must allow
@@ -188,49 +186,57 @@ HTTP/2 or HTTP/3, provide a server certificate, and require trusted client certi
 with `tls.client_auth.mode: required`. Public hostnames belong to that host's
 aliases. The management binding is exclusive, not merged into an application
 router. Plaintext, unverified clients and HTTP/1 requests cannot enter RPC handling.
-H3 uses Edge's existing QUIC listener and body/trailer handling; there is no
-gRPC-specific H3 feature or dedicated QUIC listener. The application selects
-Claviron's `http3` feature and permits H3 on its management vhost. Clients
-must independently support gRPC over H3; H2 clients continue to use H2.
+Set listener selection in the vhost and listener settings in `http.yaml`.
+Use the vhost's `requests.head_timeout` to bound the time to the response head,
+including access policy and RPC execution. Edge's request-body and response-body
+policies apply separately. H3 requires Claviron's `http3` feature and a client
+that supports gRPC over H3.
 
-## Dedicated listener
+## Client enrollment
 
-Add a `listener` independently of `vhosts`, or use `vhosts: []` for a dedicated
-listener only:
+Build with `registration` and register a `RegistrationGuard` with
+`server::management::registration::register_guard`. The guard verifies credentials and grants
+`grpc.access` by returning a `GrpcUser`. A guard can issue a CN-only identity
+or attach a stable subject URI. The latter includes the signed `grpc.access`
+grant. The role and permission manager remains optional.
 
 ```yaml
-vhosts: []
-request_timeout: 30s
-max_requests: 100
-listener:
-  scope: workers
-  dispatch: each
-  hosts: [management.example.test]
-  listen: [127.0.0.1:9443]
-  max_connections: 16
-  acl:
-    policy: deny
-    allowed: [127.0.0.0/8]
-  handshake_timeout: 10s
-  graceful_timeout: 30s
+vhosts: [management]
+registration: [enrollment]
+registration_validity_days: 30
 ```
 
-These bounds are example policy, not required timeout defaults. `listener.hosts`
-contains actual TLS server names whose existing Claviron TLS policies supply
-certificates, trust, and required client authentication. It declares no separate
-certificate or CA-file configuration. Listener-local ACL checks use the real
-accepted peer, not forwarded headers.
+The enrollment vhost needs HTTPS without mandatory client authentication.
+Management requires mTLS. Select the default issuer with `certstore.authority`.
+The registration provider prepares its signer at boot. A DB authority uses
+the selected Hosting issuer. A file authority uses the CertStore CA pair
+and its chain through the root. For an explicit file pair, set `cert_path`,
+`key_path`, and, if needed, `ca_path` inside `authority`. Hosting retains the
+public CA hierarchy and issued client certificates. An explicit issuer in a
+management issuance RPC selects a Hosting signing key.
 
-Dedicated TLS uses Claviron's shared revocation snapshot, combining CRL and
-configured database entries by issuer and serial number. Snapshot updates apply
-to new handshakes without restarting the listener or reading storage per
-connection. TLS session resumption is disabled so new connections cannot bypass
-the current snapshot; existing connections remain open.
+The management vhost must trust this issuer for client authentication.
+Its server certificate must also chain to the returned root. Use Edge's
+request policy and quota for the enrollment host.
 
-All declared binds share the listener connection cap. Conflicts with configured
-web TCP listeners are rejected. Listener topology and TLS-policy changes require
-a new listener generation; data/config reload is not an implicit socket rebind.
-With no listener and no selected vhosts, nothing serves management traffic.
+An unauthenticated `HEAD /.well-known/claviron/grpc-registration` checks
+the registration route and management address selection. It returns 204
+when a management address is available or 503 otherwise. Both responses
+carry `Claviron-Registration: 1`.
+
+Send `POST /.well-known/claviron/grpc-registration` with JSON fields
+`username`, `password`, and `csr_der` (base64 PKCS#10 DER). HTTP 201 returns
+`management_address`, `certificate_chain_pem` (the client leaf and any
+intermediates), and `authority_certificate_pem` (the root CA). The address
+uses the first concrete SNI served over TLS/H2 from the configured `vhosts`
+in order, trying each canonical name before its aliases. Port 443 takes
+precedence when available for that name. The client obtains the root over
+system-verified enrollment HTTPS and uses it to verify the management endpoint.
+The signer uses the CSR's verified public key and
+takes the certificate identity from the guard. The private key stays on the
+device. Hosting keeps the public certificate for revocation. Retrying with
+the same authorized identity and key returns the existing active certificate.
+A different key for an occupied CN returns HTTP 409.
 
 ## Lifecycle and trust boundaries
 
@@ -239,8 +245,7 @@ later worker/service/application snapshots and generations to confirm the result
 `RunTask` instead waits for one local task occurrence; a task execution budget
 and a gRPC transport deadline are separate controls.
 
-Verified TLS client identity is required on both ingresses. A management
-connection cannot stop or restart the very ingress carrying that connection.
+A management connection cannot stop or restart the Edge listener carrying it.
 Direct `MtlsManager` and `CertificateManager` calls use the same issuance/store
 logic without requiring a network request; the calling application must enforce
 its own identity, ownership, and private-key export permissions.

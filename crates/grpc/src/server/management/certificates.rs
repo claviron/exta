@@ -156,7 +156,9 @@ impl CertificateManager {
             .map_err(|_| {
                 Status::internal("stored certificate chain is invalid")
             })?;
-            let key = if request.include_private_key {
+            let key = if request.include_private_key
+                && !saved.certificate.key_der.is_empty()
+            {
                 Some(
                     transfer::private_key_to_pem(&saved.certificate.key_der)
                         .map_err(|_| {
@@ -241,5 +243,5 @@ fn transfer_info(
 }
 
 #[cfg(test)]
-#[path = "../tests/certificate_manager.rs"]
+#[path = "../../../tests/certificate_manager.rs"]
 mod tests;

@@ -5,8 +5,7 @@ use claviron::auth::Authenticated;
 use claviron::auth::authorization as domain;
 use tonic::Status;
 
-use super::management::Service;
-use super::management::codec;
+use super::{Service, codec};
 use crate::proto::users as wire;
 
 fn manager(

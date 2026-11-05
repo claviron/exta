@@ -1,27 +1,22 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use claviron::edge::OtherHandler;
+use claviron::http::deadline::head_within;
 use claviron::http::ext::ConnCtx;
+use claviron::http::policy::HttpPolicy;
 use claviron::http::{RouteBody, RouteFuture, RouteResponse, boxed_body};
 use claviron::runtime::AppState;
 use http::{Request, Response};
 use http_body_util::BodyExt;
-use tokio::sync::Semaphore;
 use tonic::Status;
 use tower::ServiceExt;
 
-use super::config::GrpcConfig;
 use super::service::ConnInfo;
 use super::services::ManagementTransport;
-
-const RUN_TASK_PATH: &str = "/claviron.tasks.TaskManager/RunTask";
 
 #[derive(Clone)]
 pub(crate) struct ManagementGrpcHandler {
     routes: tonic::service::Routes,
-    request_timeout: Duration,
-    permits: Arc<Semaphore>,
     auth_guard: AuthGuard,
     state: AppState,
 }
@@ -29,24 +24,20 @@ pub(crate) struct ManagementGrpcHandler {
 impl ManagementGrpcHandler {
     pub(crate) fn with_routes(
         routes: tonic::service::Routes,
-        permits: Arc<Semaphore>,
-        cfg: &GrpcConfig,
         host: String,
         state: AppState,
     ) -> Self {
-        Self {
-            routes,
-            request_timeout: cfg.request_timeout,
-            permits,
-            auth_guard: AuthGuard { host },
-            state,
-        }
+        Self { routes, auth_guard: AuthGuard { host }, state }
     }
 }
 
 impl OtherHandler for ManagementGrpcHandler {
     fn name(&self) -> &'static str {
         "management_grpc"
+    }
+
+    fn times_its_head(&self) -> bool {
+        true
     }
 
     fn call(
@@ -88,55 +79,29 @@ impl OtherHandler for ManagementGrpcHandler {
             );
         }
 
-        let session = conn_ctx
-            .expect("verified client certificate requires connection context")
-            .state
-            .get_or_insert_with(|| {
-                super::access::Session::new(
-                    self.state.clone(),
-                    peer,
-                    self.request_timeout,
-                )
-            });
-
+        let conn_ctx = conn_ctx
+            .expect("verified client certificate requires connection context");
+        let session = conn_ctx.state.get_or_insert_with(|| {
+            super::access::Session::new(self.state.clone(), peer)
+        });
+        let transport = ManagementTransport(conn_ctx.listener.clone());
         if let Some(conn_info) = conn_info {
             req.extensions_mut().insert(conn_info);
         }
-        // A dedicated driver supplies its own owner. Otherwise the trusted
-        // edge connection, never a header, identifies the serving transport.
-        if req.extensions().get::<ManagementTransport>().is_none() {
-            let owner = req.extensions().get::<Arc<ConnCtx>>().map(|ctx| {
-                if ctx.proto == Some(claviron::tls::Proto::H3) {
-                    "H3Server"
-                } else if ctx.tls.is_some() {
-                    "HttpsServer"
-                } else {
-                    "HttpServer"
-                }
-            });
-            if let Some(owner) = owner {
-                req.extensions_mut().insert(ManagementTransport(owner));
-            }
-        }
+        req.extensions_mut().insert(transport);
 
         let routes = self.routes.clone();
         let operation = req.uri().path().to_owned();
-        let request_timeout =
-            request_timeout_for(req.uri().path(), self.request_timeout);
-        let permits = self.permits.clone();
+        let head_timeout = req
+            .extensions()
+            .get::<HttpPolicy>()
+            .and_then(|policy| policy.requests.head_timeout);
         let mut req = req.map(|body| {
             let body = body.map_err(|err| Status::internal(err.to_string()));
             tonic::body::Body::new(body)
         });
 
         Box::pin(async move {
-            let Ok(_permit) = permits.acquire_owned().await else {
-                return Ok(status_response(
-                    Status::unavailable("gRPC service is shutting down"),
-                    version,
-                ));
-            };
-
             let serve = async {
                 let admitted = session.admit(operation).await?;
                 req.extensions_mut().insert(admitted);
@@ -146,35 +111,16 @@ impl OtherHandler for ManagementGrpcHandler {
                     .unwrap_or_else(|err| match err {});
                 Ok::<_, Status>(response)
             };
-            match request_timeout {
-                Some(request_timeout) => {
-                    match tokio::time::timeout(request_timeout, serve).await {
-                        Ok(Ok(resp)) => Ok(route_response(resp, version)),
-                        Ok(Err(status)) => Ok(status_response(status, version)),
-                        Err(_) => Ok(status_response(
-                            Status::deadline_exceeded("gRPC request timed out"),
-                            version,
-                        )),
-                    }
-                }
-                None => match serve.await {
-                    Ok(resp) => Ok(route_response(resp, version)),
-                    Err(status) => Ok(status_response(status, version)),
-                },
+            match head_within(head_timeout, serve).await {
+                Some(Ok(resp)) => Ok(route_response(resp, version)),
+                Some(Err(status)) => Ok(status_response(status, version)),
+                None => Ok(status_response(
+                    Status::deadline_exceeded("gRPC response head timed out"),
+                    version,
+                )),
             }
         })
     }
-}
-
-fn request_timeout_for(
-    path: &str,
-    configured: Duration,
-) -> Option<Duration> {
-    // RunTask is a synchronous result RPC whose task-owned execution timeout
-    // may intentionally exceed the general management request bound. Tonic
-    // still honors a caller's grpc-timeout header, while TaskManager bounds
-    // the execution itself when the caller sends no transport deadline.
-    (path != RUN_TASK_PATH).then_some(configured)
 }
 
 #[derive(Clone)]
@@ -226,36 +172,9 @@ fn conn_info_from_ctx(ctx: &ConnCtx) -> ConnInfo {
             _ => None,
         });
 
-    ConnInfo { addr: ctx.remote, certificates: Vec::new(), client_cn }
+    ConnInfo { addr: ctx.remote, client_cn }
 }
 
 #[cfg(test)]
 #[path = "../../tests/server/bypass_protocol.rs"]
 mod protocol_tests;
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::{RUN_TASK_PATH, request_timeout_for};
-
-    #[test]
-    fn run_task_uses_its_task_and_client_owned_deadlines() {
-        assert_eq!(
-            request_timeout_for(RUN_TASK_PATH, Duration::from_secs(30)),
-            None
-        );
-    }
-
-    #[test]
-    fn ordinary_management_requests_keep_the_configured_bound() {
-        let configured = Duration::from_secs(30);
-        assert_eq!(
-            request_timeout_for(
-                "/claviron.tasks.TaskManager/ListTasks",
-                configured
-            ),
-            Some(configured)
-        );
-    }
-}

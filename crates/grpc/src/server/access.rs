@@ -1,6 +1,5 @@
 //! One gRPC admission per connection, with request-local operation identity.
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::access::{AccessError, GrpcAccessPolicy};
 use claviron::auth::AnyAuthenticated;
@@ -27,7 +26,6 @@ impl Session {
     pub(crate) fn new(
         state: AppState,
         peer: Option<Arc<PeerIdentity>>,
-        bound: Duration,
     ) -> Self {
         let decision = async move {
             let client_cn = peer.as_ref().and_then(|peer| {
@@ -36,7 +34,7 @@ impl Session {
                     _ => None,
                 }
             });
-            let decision = tokio::time::timeout(bound, async {
+            let decision: Decision = async {
                 let Some(policy) =
                     state.registry_ref().resolve_dyn::<dyn GrpcAccessPolicy>()
                 else {
@@ -70,11 +68,8 @@ impl Session {
                     "✅ gRPC access policy accepted a TLS-authenticated peer"
                 );
                 Ok(actor)
-            })
-            .await
-            .unwrap_or_else(|_| {
-                Err(Status::deadline_exceeded("gRPC admission timed out"))
-            });
+            }
+            .await;
             if let Err(error) = &decision {
                 match error.code() {
                     tonic::Code::Unauthenticated | tonic::Code::PermissionDenied => {

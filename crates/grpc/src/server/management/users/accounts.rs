@@ -4,7 +4,7 @@ use claviron::auth::Authenticated;
 use claviron::auth::users as domain;
 use tonic::Status;
 
-use super::management::codec;
+use super::codec;
 use crate::proto::users as wire;
 
 pub(super) async fn schema(

@@ -2,7 +2,7 @@
 use claviron::runtime::AppState;
 use tonic::{Request, Response, Status};
 
-use crate::certificate_manager::CertificateManager;
+use super::management::certificates::CertificateManager;
 use crate::proto::certificates::certificate_transfer_server::{
     CertificateTransfer, CertificateTransferServer,
 };

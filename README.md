@@ -15,7 +15,7 @@ and fleet coordination; they are not required by the core runtime.
 | [claviron-acme](crates/acme/README.md) | ACME accounts, HTTP-01 issuance, certificate persistence, and renewal tasks. | `server`, `postgres` or `sqlite`, `tasks` |
 | [claviron-dns](crates/dns/README.md) | Authoritative DNS over UDP/TCP, optional DoH, immutable serving snapshots, and zone management. | `server` (default), `postgres`, `doh` |
 | [claviron-domains](crates/domains/README.md) | Registrar-held domains, registration and renewal operations, delegation, registrar-hosted records, and synchronization. | `godaddy`, `namecheap`, `tasks` |
-| [claviron-grpc](crates/grpc/README.md) | Typed management over an mTLS vhost or dedicated HTTP/2 listener, plus generated protocol types and client stubs. | `server`, `workers`, `tasks`, `acme`, `dns`, `domains`, `mtls`, `certificates` |
+| [claviron-grpc](crates/grpc/README.md) | Typed management over Edge mTLS vhosts, plus generated protocol types and client stubs. | `server`, `workers`, `tasks`, `acme`, `dns`, `domains`, `mtls`, `certificates` |
 
 Each crate README describes its feature boundaries, registration, configuration,
 and current limitations.

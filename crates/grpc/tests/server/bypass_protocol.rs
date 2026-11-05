@@ -15,7 +15,7 @@ impl Greeter for Echo {
         request: tonic::Request<HelloRequest>,
     ) -> Result<tonic::Response<HelloReply>, Status> {
         let owner =
-            request.extensions().get::<ManagementTransport>().unwrap().0;
+            &request.extensions().get::<ManagementTransport>().unwrap().0;
         let identity = request.extensions().get::<Arc<ConnInfo>>().unwrap();
         assert_eq!(identity.client_cn.as_deref(), Some("operator"));
         Ok(tonic::Response::new(HelloReply {
@@ -34,8 +34,6 @@ fn handler() -> ManagementGrpcHandler {
 fn handler_for(state: claviron::runtime::AppState) -> ManagementGrpcHandler {
     ManagementGrpcHandler::with_routes(
         tonic::service::Routes::new(GreeterServer::new(Echo)).prepare(),
-        Arc::new(Semaphore::new(1)),
-        &GrpcConfig::default(),
         "management.example.test".to_owned(),
         state,
     )
@@ -93,10 +91,7 @@ fn request(
 
 #[tokio::test]
 async fn grpc_h2_h3_dispatch_preserves_messages_identity_and_status_trailers() {
-    for (version, owner) in [
-        (http::Version::HTTP_2, "HttpsServer"),
-        (http::Version::HTTP_3, "H3Server"),
-    ] {
+    for version in [http::Version::HTTP_2, http::Version::HTTP_3] {
         let response = handler().call(request(version, true)).await.unwrap();
         assert_eq!(response.version(), version);
         assert_eq!(response.headers()["content-type"], "application/grpc");
@@ -104,7 +99,7 @@ async fn grpc_h2_h3_dispatch_preserves_messages_identity_and_status_trailers() {
         assert_eq!(body.trailers().unwrap()["grpc-status"], "0");
         let bytes = body.to_bytes();
         let reply = HelloReply::decode(&bytes[5..]).unwrap();
-        assert_eq!(reply.message, format!("{owner}:hello"));
+        assert_eq!(reply.message, "management:hello");
     }
 }
 
@@ -122,6 +117,38 @@ async fn grpc_h3_requires_verified_mtls_and_http1_remains_rejected() {
     let response =
         handler().call(request(http::Version::HTTP_11, true)).await.unwrap();
     assert_eq!(response.headers()["grpc-status"], "9");
+}
+
+#[tokio::test]
+async fn grpc_response_head_uses_the_effective_http_deadline() {
+    struct PendingAdmission;
+
+    #[async_trait::async_trait]
+    impl crate::access::GrpcAccessPolicy for PendingAdmission {
+        async fn authorize(
+            &self,
+            _peer: &claviron::ssl::peer::PeerIdentity,
+        ) -> Result<
+            Option<claviron::auth::AnyAuthenticated>,
+            crate::access::AccessError,
+        > {
+            std::future::pending().await
+        }
+    }
+
+    let state = AppState::standalone("grpc-deadline-test", ".");
+    state.registry_ref().insert(Arc::new(PendingAdmission)).unwrap();
+    state.registry_ref()
+        .bind_dyn::<dyn crate::access::GrpcAccessPolicy, PendingAdmission>(
+            |value| value,
+        )
+        .unwrap();
+    let mut request = request(http::Version::HTTP_2, true);
+    let mut policy = HttpPolicy::unlimited();
+    policy.requests.head_timeout = Some(std::time::Duration::ZERO);
+    request.extensions_mut().insert(policy);
+    let response = handler_for(state).call(request).await.unwrap();
+    assert_eq!(response.headers()["grpc-status"], "4");
 }
 
 struct AccessCheck {

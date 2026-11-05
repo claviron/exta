@@ -21,7 +21,7 @@ use claviron::hosting::{
 use claviron::runtime::AppState;
 use claviron::ssl::parsers::take_first_cert_from_der;
 use claviron::ssl::{Host, KeyString};
-use claviron::tls::{CertAuthority, CertSigner};
+use claviron::tls::{CertAuthority, CertSigner, CertificateStore};
 use time::OffsetDateTime;
 use tonic::Status;
 
@@ -38,11 +38,34 @@ pub struct MtlsManager {
     store: HostingStore,
     server_id: Option<i32>,
     authority: Option<Arc<CertAuthority>>,
+    certificate_store: Option<Arc<CertificateStore>>,
+    prepared_signer: Option<Arc<ManagedSigner>>,
     permissions: Option<Arc<PermissionCatalog>>,
     #[cfg(feature = "authorization")]
     permission_manager: Option<Arc<dyn RolePermissionManager>>,
     #[cfg(feature = "authorization")]
     actor: Option<AnyAuthenticated>,
+}
+
+pub(crate) struct ManagedSigner {
+    signer: Arc<CertSigner>,
+    issuer: CertAuthority,
+}
+
+impl ManagedSigner {
+    fn issuer_id(&self) -> i32 {
+        self.issuer.issuer_id().expect("managed signer has a hosting issuer")
+    }
+
+    async fn validate(
+        &self,
+        store: &HostingStore,
+    ) -> Result<(), Status> {
+        self.issuer
+            .validate_issuer(store)
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))
+    }
 }
 
 impl MtlsManager {
@@ -152,6 +175,11 @@ impl MtlsManager {
                 "disabled certificates cannot be renewed",
             ));
         }
+        if original.key_der.is_empty() {
+            return Err(Status::failed_precondition(
+                "this client certificate requires a new device-signed request",
+            ));
+        }
         let peer = claviron::ssl::peer::peer_identity(&original.certs_der)
             .map_err(|_| {
                 Status::failed_precondition(
@@ -191,7 +219,7 @@ impl MtlsManager {
             })?;
             let ca = self
                 .store
-                .certificate_by_id(id)
+                .public_certificate_by_id(id)
                 .await
                 .map_err(storage_status)?
                 .ok_or_else(|| {
@@ -202,35 +230,56 @@ impl MtlsManager {
                     "issuer must reference an enabled CA",
                 ));
             }
-            Some(ca)
+            let default_file =
+                self.authority.as_ref().is_some_and(|authority| {
+                    authority.path().is_some()
+                        && authority
+                            .roots()
+                            .iter()
+                            .flat_map(|cert| cert.as_ref().iter().copied())
+                            .eq(ca.certs_der.iter().copied())
+                });
+            if default_file {
+                let managed = self.default_signer().await?;
+                if managed.issuer_id() != issuer.id {
+                    return Err(Status::failed_precondition(
+                        "original issuer changed",
+                    ));
+                }
+                Some(managed.signer.clone())
+            } else {
+                let signer = CertSigner::from_issuer(&self.store, &issuer.name)
+                    .await
+                    .map_err(|error| {
+                        Status::failed_precondition(error.to_string())
+                    })?;
+                if signer.issuer_id() != Some(issuer.id) {
+                    return Err(Status::failed_precondition(
+                        "original issuer changed",
+                    ));
+                }
+                Some(Arc::new(signer))
+            }
         } else {
             None
         };
         let previous = original.clone();
         let chain = tokio::task::spawn_blocking(move || {
             let leaf = take_first_cert_from_der(&previous.certs_der)?;
-            let leaf_len = leaf.as_ref().len();
-            let signer = issuer
-                .as_ref()
-                .map(|ca| (ca.certs_der.as_slice(), ca.key_der.as_slice()));
-            let mut chain = claviron::ssl::renewal::renew_certificate(
-                &previous.certs_der[..leaf_len],
-                &previous.key_der,
-                signer,
-                request.validity_days,
-            )?;
-            if let Some(ca) = issuer {
-                let mut remaining = ca.certs_der.as_slice();
-                while !remaining.is_empty() {
-                    let cert = take_first_cert_from_der(remaining)?;
-                    let size = cert.as_ref().len();
-                    if cert.subject() != cert.issuer() {
-                        chain.extend_from_slice(&remaining[..size]);
-                    }
-                    remaining = &remaining[size..];
-                }
+            let leaf = &previous.certs_der[..leaf.as_ref().len()];
+            match issuer {
+                Some(signer) => signer.renew_certificate(
+                    leaf,
+                    &previous.key_der,
+                    request.validity_days,
+                ),
+                None => Ok(claviron::ssl::renewal::renew_certificate(
+                    leaf,
+                    &previous.key_der,
+                    None,
+                    request.validity_days,
+                )?),
             }
-            Ok::<_, claviron::ssl::SSLError>(chain)
         })
         .await
         .map_err(|_| Status::internal("certificate renewal task failed"))?
@@ -266,6 +315,8 @@ impl MtlsManager {
             store,
             server_id,
             authority,
+            certificate_store: None,
+            prepared_signer: None,
             permissions: None,
             #[cfg(feature = "authorization")]
             permission_manager: None,
@@ -299,6 +350,10 @@ impl MtlsManager {
             hosting.server_id(),
             state.registry_ref().resolve::<CertAuthority>(),
         );
+        manager.certificate_store =
+            state.registry_ref().resolve::<CertificateStore>();
+        manager.prepared_signer =
+            state.registry_ref().resolve::<ManagedSigner>();
         manager.permissions =
             state.registry_ref().resolve::<PermissionCatalog>();
         #[cfg(feature = "authorization")]
@@ -307,6 +362,146 @@ impl MtlsManager {
                 state.registry_ref().resolve_dyn::<dyn RolePermissionManager>();
         }
         Ok(manager)
+    }
+
+    async fn default_signer(&self) -> Result<Arc<ManagedSigner>, Status> {
+        if let Some(prepared) = &self.prepared_signer {
+            prepared.validate(&self.store).await?;
+            return Ok(prepared.clone());
+        }
+        let authority = self.authority.as_ref().ok_or_else(|| {
+            Status::failed_precondition("CertStore authority is not configured")
+        })?;
+        let signer = match &self.certificate_store {
+            Some(source) => source.signer(authority).await,
+            None => CertSigner::from_authority(&self.store, authority).await,
+        }
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        let issuer = if authority.issuer_id().is_some() {
+            authority.as_ref().clone()
+        } else {
+            register_file_issuer(&self.store, authority).await?
+        };
+        Ok(Arc::new(ManagedSigner { signer: Arc::new(signer), issuer }))
+    }
+
+    #[cfg(feature = "registration")]
+    pub(crate) async fn prepare_registration_signer(
+        state: &AppState
+    ) -> Result<Arc<ManagedSigner>, Status> {
+        let managed = Self::from_state(state)?.default_signer().await?;
+        registration_root(managed.signer.authority())?;
+        Ok(managed)
+    }
+
+    #[cfg(feature = "registration")]
+    pub(crate) async fn register_client(
+        &self,
+        user: super::registration::GrpcUser,
+        csr: Vec<u8>,
+        validity_days: std::num::NonZeroU32,
+    ) -> Result<super::registration::Issued, Status> {
+        use claviron::auth::permission::PermissionDefinition;
+        use claviron::ssl::formatters::certificate_chain_to_pem;
+
+        let (actor, subject) = user.into_parts();
+        let name = actor
+            .auth_identifier()
+            .parse::<claviron::ssl::CommonName>()
+            .map_err(|_| {
+                Status::failed_precondition("invalid registration identity")
+            })?
+            .into_string();
+        let permissions = if subject.is_some() {
+            let mut catalog = PermissionCatalog::new();
+            catalog
+                .register_name(crate::permission::GrpcAccess::NAME)
+                .map_err(|_| {
+                    Status::internal("invalid registration permission")
+                })?;
+            Some(
+                catalog
+                    .validate([crate::permission::GrpcAccess::NAME])
+                    .map_err(|_| {
+                        Status::internal("invalid registration permission")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let managed = self.default_signer().await?;
+        let issuer = managed.issuer_id();
+        let signer = managed.signer.clone();
+        let authority_certificate_pem =
+            certificate_chain_to_pem(registration_root(signer.authority())?)
+                .map_err(|_| {
+                    Status::failed_precondition("registration root is invalid")
+                })?;
+        let signing_name = name.clone();
+        let certs_der = tokio::task::spawn_blocking(move || {
+            signer.issue_client_csr(
+                &csr,
+                &signing_name,
+                subject.as_ref(),
+                permissions.as_ref(),
+                validity_days.get(),
+            )
+        })
+        .await
+        .map_err(|_| Status::internal("registration signing task failed"))?
+        .map_err(|_| {
+            Status::invalid_argument("certificate request could not be signed")
+        })?;
+        let chain = certificate_chain_to_pem(&certs_der).map_err(|_| {
+            Status::internal("registration certificate chain is invalid")
+        })?;
+        let stored = persist(
+            &self.store,
+            CertificateKind::Client,
+            name.clone(),
+            Vec::new(),
+            Some(issuer),
+            None,
+            claviron::tls::IssuedCertificate {
+                certs_der: certs_der.clone(),
+                key_der: Vec::new(),
+            },
+        )
+        .await;
+        let certificate_chain_pem = match stored {
+            Ok(_) => chain,
+            Err(error) if error.code() == tonic::Code::AlreadyExists => {
+                let Some(saved) = self
+                    .store
+                    .certificate_by_cn(&name)
+                    .await
+                    .map_err(storage_status)?
+                else {
+                    return Err(error);
+                };
+                let saved = saved.certificate;
+                if saved.kind != CertificateKind::Client
+                    || saved.issuer_id != Some(issuer)
+                    || !saved.enabled
+                    || saved.revoked_at.is_some()
+                    || !saved.key_der.is_empty()
+                    || saved.expires_at <= OffsetDateTime::now_utc()
+                    || !same_registration_identity(&saved.certs_der, &certs_der)
+                {
+                    return Err(error);
+                }
+                certificate_chain_to_pem(&saved.certs_der).map_err(|_| {
+                    Status::internal(
+                        "stored registration certificate chain is invalid",
+                    )
+                })?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(super::registration::Issued {
+            certificate_chain_pem,
+            authority_certificate_pem,
+        })
     }
     /// Generate and atomically store a self-signed CA and its issuer identity.
     pub async fn create_root_ca(
@@ -386,33 +581,21 @@ impl MtlsManager {
         } else {
             None
         };
-        let authority = if let Some(name) = issuer_name {
-            std::sync::Arc::new(
+        let (authority, issuer_id) = if let Some(name) = issuer_name {
+            let signer =
                 CertSigner::from_issuer(hosting, &name).await.map_err(
                     |error| Status::failed_precondition(error.to_string()),
-                )?,
-            )
-        } else {
-            let authority = self.authority.as_ref().ok_or_else(|| {
+                )?;
+            let issuer = signer.issuer_id().ok_or_else(|| {
                 Status::failed_precondition(
-                    "CertStore authority is not configured",
+                    "selected signer has no hosting issuer",
                 )
             })?;
-            Arc::new(
-                CertSigner::from_authority(hosting, authority).await.map_err(
-                    |error| Status::failed_precondition(error.to_string()),
-                )?,
-            )
+            (Arc::new(signer), issuer)
+        } else {
+            let managed = self.default_signer().await?;
+            (managed.signer.clone(), managed.issuer_id())
         };
-        authority
-            .validate_issuer(hosting)
-            .await
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-        let issuer_id = authority.issuer_id().ok_or_else(|| {
-            Status::failed_precondition(
-                "authority must select a database-backed local_ca issuer",
-            )
-        })?;
         if hosting
             .certificate_by_cn(&name)
             .await
@@ -473,6 +656,121 @@ impl MtlsManager {
         .await?;
         Ok(info)
     }
+}
+
+#[cfg(feature = "registration")]
+fn registration_root(authority: &CertAuthority) -> Result<&[u8], Status> {
+    let root = authority
+        .roots()
+        .last()
+        .ok_or_else(|| {
+            Status::failed_precondition("registration CA has no root")
+        })?
+        .as_ref();
+    let parsed = take_first_cert_from_der(root).map_err(|_| {
+        Status::failed_precondition("registration root is invalid")
+    })?;
+    if !parsed.is_ca()
+        || parsed.subject() != parsed.issuer()
+        || parsed.verify_signature(None).is_err()
+    {
+        return Err(Status::failed_precondition("registration CA has no root"));
+    }
+    Ok(root)
+}
+
+/// Retain the public issuer hierarchy so file-issued leaves use the normal
+/// hosting identity and revocation paths. Private keys stay in CertStore.
+async fn register_file_issuer(
+    store: &HostingStore,
+    authority: &CertAuthority,
+) -> Result<CertAuthority, Status> {
+    let roots = authority.roots();
+    let mut parent = None;
+    for (index, der) in roots.iter().enumerate().rev() {
+        let certificate =
+            take_first_cert_from_der(der.as_ref()).map_err(|_| {
+                Status::failed_precondition("invalid CA certificate")
+            })?;
+        if parent.is_none()
+            && (certificate.subject() != certificate.issuer()
+                || certificate.verify_signature(None).is_err())
+        {
+            return Err(Status::failed_precondition(
+                "file authority must include its root CA",
+            ));
+        }
+        let name = certificate
+            .subject()
+            .iter_common_name()
+            .next()
+            .and_then(|attribute| attribute.as_str().ok())
+            .ok_or_else(|| {
+                Status::failed_precondition("authority has no common name")
+            })?
+            .parse::<claviron::ssl::CommonName>()
+            .map_err(|_| {
+                Status::failed_precondition("invalid authority common name")
+            })?;
+        if store
+            .issuer_by_name(name.as_str())
+            .await
+            .map_err(storage_status)?
+            .is_none()
+        {
+            let material = claviron::tls::IssuedCertificate {
+                certs_der: roots[index..]
+                    .iter()
+                    .flat_map(|cert| cert.as_ref().iter().copied())
+                    .collect(),
+                key_der: Vec::new(),
+            };
+            match persist(
+                store,
+                CertificateKind::Ca,
+                name.as_str().to_owned(),
+                Vec::new(),
+                parent,
+                None,
+                material,
+            )
+            .await
+            {
+                Ok(_) => (),
+                Err(error) if error.code() == tonic::Code::AlreadyExists => (),
+                Err(error) => return Err(error),
+            }
+        }
+        let issuer = CertAuthority::from_issuer(store, name.as_str())
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        if issuer.roots() != &roots[index..] {
+            return Err(Status::failed_precondition(
+                "hosting issuer does not match the selected file CA chain",
+            ));
+        }
+        parent = issuer.issuer_id();
+        if index == 0 {
+            return Ok(issuer);
+        }
+    }
+    Err(Status::failed_precondition("file signing authority is empty"))
+}
+
+#[cfg(feature = "registration")]
+fn same_registration_identity(
+    saved: &[u8],
+    candidate: &[u8],
+) -> bool {
+    use claviron::ssl::peer::peer_identity;
+    match (take_first_cert_from_der(saved), take_first_cert_from_der(candidate))
+    {
+        (Ok(saved), Ok(candidate))
+            if saved.public_key().raw == candidate.public_key().raw => {}
+        _ => return false,
+    }
+    matches!((peer_identity(saved), peer_identity(candidate)), (Ok(saved), Ok(candidate))
+        if saved.common_names == candidate.common_names && saved.subject_uris == candidate.subject_uris)
 }
 
 fn identity(
@@ -714,5 +1012,5 @@ fn metadata(saved: HostedCertificate) -> Result<CertificateInfo, Status> {
 }
 
 #[cfg(test)]
-#[path = "../tests/mtls_manager.rs"]
+#[path = "../../../tests/mtls_manager.rs"]
 mod tests;

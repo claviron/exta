@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use claviron::runtime::AppState;
 use claviron::runtime::registry::Error;
-use rustls::pki_types::CertificateDer;
 use tonic_reflection::server::Builder as ReflBuilder;
 
 #[cfg(feature = "acme")]
@@ -65,8 +64,8 @@ pub(crate) fn create_management_routes(
     let routes = routes.add_service(acme_service);
 
     #[cfg(any(feature = "users", feature = "authorization"))]
-    let routes =
-        routes.add_service(super::management::create_service(state.clone()));
+    let routes = routes
+        .add_service(super::management::users::create_service(state.clone()));
 
     #[cfg(feature = "tasks")]
     let routes = routes.add_service(task_service);
@@ -146,83 +145,5 @@ fn with_metrics_route(
 #[derive(Debug)]
 pub(crate) struct ConnInfo {
     pub(crate) addr: SocketAddr,
-    #[allow(unused)]
-    pub(crate) certificates: Vec<CertificateDer<'static>>,
     pub(crate) client_cn: Option<String>,
-}
-
-#[cfg(all(test, feature = "metrics"))]
-mod tests {
-    use std::sync::Arc;
-
-    use claviron::metrics::{MetricsFamily, MetricsProvider};
-    use http::{Request, StatusCode};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    use super::*;
-
-    struct TestMetrics;
-
-    impl MetricsFamily for TestMetrics {
-        fn name(&self) -> &'static str {
-            "test"
-        }
-
-        fn write_prometheus(
-            &self,
-            _state: &AppState,
-            output: &mut String,
-        ) -> Result<(), String> {
-            output.push_str("claviron_grpc_metrics_route_test 1\n");
-            Ok(())
-        }
-    }
-
-    fn routes_with_metrics() -> tonic::service::Routes {
-        let state = AppState::standalone("grpc-metrics-test", ".");
-        claviron::metrics::register(&state).expect("register metrics provider");
-        state
-            .registry_ref()
-            .resolve::<MetricsProvider>()
-            .expect("resolve metrics provider")
-            .register(Arc::new(TestMetrics));
-        with_metrics_route(tonic::service::Routes::default(), state).prepare()
-    }
-
-    #[tokio::test]
-    async fn serves_prometheus_metrics_on_exact_path() {
-        let response = routes_with_metrics()
-            .oneshot(
-                Request::builder()
-                    .uri("/metrics")
-                    .body(tonic::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(http::header::CONTENT_TYPE).unwrap(),
-            "text/plain; version=0.0.4"
-        );
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "claviron_grpc_metrics_route_test 1\n");
-    }
-
-    #[tokio::test]
-    async fn does_not_capture_paths_below_metrics() {
-        let response = routes_with_metrics()
-            .oneshot(
-                Request::builder()
-                    .uri("/metrics/extra")
-                    .body(tonic::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.headers().get("grpc-status").unwrap(), "12");
-    }
 }

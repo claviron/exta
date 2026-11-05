@@ -1,5 +1,145 @@
 use super::*;
 
+#[cfg(feature = "registration")]
+#[tokio::test]
+async fn registration_persists_only_public_material_and_reuses_the_same_device()
+{
+    use std::{any::Any, borrow::Cow, num::NonZeroU32};
+
+    use claviron::auth::Authenticated;
+    use claviron::ssl::{Organization, generators};
+
+    struct Operator;
+
+    impl Authenticated for Operator {
+        fn auth_subject(&self) -> Cow<'_, str> {
+            "operator".into()
+        }
+
+        fn auth_identifier(&self) -> &str {
+            "operator"
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("fixtures/certificates.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = HostingStore::sqlite(pool);
+    MtlsManager::new(store.clone(), None, None)
+        .create_root_ca(CreateRootCaRequest {
+            common_name: "root.test".into(),
+            validity_days: 30,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let authority =
+        CertAuthority::from_issuer(&store, "root.test").await.unwrap();
+    let root_pem = claviron::ssl::formatters::certificate_chain_to_pem(
+        authority.roots()[0].as_ref(),
+    )
+    .unwrap();
+    let manager =
+        MtlsManager::new(store.clone(), None, Some(Arc::new(authority)));
+    let request = || {
+        let key = generators::generate_private_key().unwrap();
+        generators::generate_server_csr(
+            &key,
+            "request.test",
+            Vec::new(),
+            &Organization::default(),
+        )
+        .unwrap()
+        .der()
+        .as_ref()
+        .to_vec()
+    };
+    let csr = request();
+    let user = || crate::registration::GrpcUser::new(Arc::new(Operator));
+    let validity = NonZeroU32::new(1).unwrap();
+    let chain =
+        manager.register_client(user(), csr.clone(), validity).await.unwrap();
+    assert_eq!(chain.authority_certificate_pem, root_pem);
+    assert!(!chain.certificate_chain_pem.contains(&root_pem));
+    assert_eq!(
+        manager.register_client(user(), csr, validity).await.unwrap(),
+        chain
+    );
+    let stored =
+        store.certificate_by_cn("operator").await.unwrap().unwrap().certificate;
+    assert!(stored.key_der.is_empty());
+    let rejected =
+        manager.register_client(user(), request(), validity).await.unwrap_err();
+    assert_eq!(rejected.code(), tonic::Code::AlreadyExists);
+}
+
+#[tokio::test]
+async fn file_authority_persists_public_issuer_hierarchy_without_private_keys()
+{
+    use claviron::ssl::generators;
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("fixtures/certificates.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = HostingStore::sqlite(pool);
+    let root_key = generators::generate_ca_key().unwrap().serialize_pem();
+    let root = generators::generate_ca_cert(
+        "Root CA",
+        root_key.as_bytes(),
+        30,
+        None,
+        None,
+    )
+    .unwrap();
+    let key = generators::generate_ca_key().unwrap().serialize_pem();
+    let ca = generators::generate_intermediate_ca_cert(
+        key.as_bytes(),
+        &root,
+        root_key.as_bytes(),
+        "Intermediate CA",
+        7,
+        &Default::default(),
+        Some(0),
+    )
+    .unwrap();
+    let chain = [&ca, &root].map(|pem| {
+        claviron::ssl::parsers::concat_chain_bytes_from_pem(pem).unwrap().into()
+    });
+    let authority = CertAuthority::new("authority.pem".into(), chain.into());
+    let issuer = register_file_issuer(&store, &authority).await.unwrap();
+    let repeated = register_file_issuer(&store, &authority).await.unwrap();
+    assert_eq!(issuer.issuer_id(), repeated.issuer_id());
+    let root = store.issuer_by_name("Root CA").await.unwrap().unwrap();
+    let ca = store
+        .certificate_by_cn("Intermediate CA")
+        .await
+        .unwrap()
+        .unwrap()
+        .certificate;
+    assert_eq!(ca.issuer_id, Some(root.id));
+    assert!(ca.key_der.is_empty());
+    let stored_root =
+        store.certificate_by_cn("Root CA").await.unwrap().unwrap().certificate;
+    assert!(stored_root.key_der.is_empty());
+    assert!(CertSigner::from_issuer(&store, "Intermediate CA").await.is_err());
+}
+
 #[test]
 fn issuance_input_requires_explicit_validity_and_exact_client_names() {
     let request = |name: &str, days| CreateCertificateRequest {

@@ -4,11 +4,14 @@ pub mod access;
 #[cfg(feature = "server")]
 pub mod permission;
 
+#[cfg(feature = "registration")]
+pub use server::management::registration;
+
 #[cfg(feature = "mtls-manager")]
-pub mod mtls_manager;
+pub use server::management::mtls as mtls_manager;
 
 #[cfg(feature = "certificate-manager")]
-pub mod certificate_manager;
+pub use server::management::certificates as certificate_manager;
 
 #[cfg(feature = "server")]
 pub mod error;

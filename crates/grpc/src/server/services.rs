@@ -2,6 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use claviron::http::ListenerId;
 use claviron::orbit::placement::Dispatch;
 use claviron::orbit::service::{
     FleetMember as DomainServiceMember,
@@ -34,8 +35,14 @@ pub struct ServiceManagerService {
 }
 
 /// Trusted adapter extension naming the runnable carrying this RPC.
-#[derive(Clone, Copy)]
-pub(crate) struct ManagementTransport(pub(crate) &'static str);
+#[derive(Clone)]
+pub(crate) struct ManagementTransport(pub(crate) ListenerId);
+
+impl ManagementTransport {
+    fn owns(&self, name: &str) -> bool {
+        name.strip_prefix("Listener:") == Some(self.0.as_str())
+    }
+}
 
 fn command_transport<'a>(
     owner: Option<&'a ManagementTransport>,
@@ -48,7 +55,7 @@ fn command_transport<'a>(
                 "management transport ownership is missing",
             )
         })?;
-        if owner.0 == name {
+        if owner.owns(name) {
             return Err(Status::failed_precondition(format!(
                 "cannot stop or restart service '{name}' carrying this management connection; connect through another ingress"
             )));
@@ -77,8 +84,8 @@ impl ServiceManagerService {
         )?;
         tracing::debug!(
             service = %request.get_ref().name,
-            transport = owner.map(|owner| owner.0),
-            serving_transport = owner.is_some_and(|owner| owner.0 == request.get_ref().name.as_str()),
+            listener = owner.map(|owner| owner.0.as_str()),
+            serving_transport = owner.is_some_and(|owner| owner.owns(&request.get_ref().name)),
             ?action,
             "submitting management service command"
         );

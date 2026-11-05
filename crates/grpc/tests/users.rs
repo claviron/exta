@@ -75,7 +75,7 @@ fn admitted<T>(value: T) -> Request<T> {
         .unwrap()
         .strip_suffix("Request")
         .unwrap();
-    request.extensions_mut().insert(super::super::access::Admission {
+    request.extensions_mut().insert(crate::server::access::Admission {
         operation: format!("/claviron.users.UserManagement/{operation}"),
         actor: Some(Arc::new(Actor("operator"))),
     });
@@ -84,7 +84,7 @@ fn admitted<T>(value: T) -> Request<T> {
 async fn setup() -> Service {
     let state = AppState::standalone("management-unit-test", ".");
     let provider =
-        Arc::new(super::super::provider::GrpcServiceProvider::new(&state));
+        Arc::new(crate::server::provider::GrpcServiceProvider::new(&state));
     let config = serde_yaml::from_str("user_management: {max_page_size: 2, max_document_bytes: 256, max_assignment_members: 2}").unwrap();
     claviron::runtime::congif::Configurable::configure(
         provider.as_ref(),
@@ -613,7 +613,7 @@ async fn management_admission_has_no_metadata_or_certificate_name_fallback() {
     });
     peer_only
         .extensions_mut()
-        .get_mut::<super::super::access::Admission>()
+        .get_mut::<crate::server::access::Admission>()
         .unwrap()
         .actor = None;
     assert_eq!(
@@ -630,7 +630,7 @@ async fn management_admission_cannot_be_reused_for_another_operation() {
     });
     request
         .extensions_mut()
-        .get_mut::<super::super::access::Admission>()
+        .get_mut::<crate::server::access::Admission>()
         .unwrap()
         .operation = "/example.Admin/Inspect".into();
     assert_eq!(
@@ -708,7 +708,7 @@ async fn management_limits_bound_work_before_delegation_and_follow_reload() {
     let provider = service
         .state
         .registry_ref()
-        .resolve::<super::super::provider::GrpcServiceProvider>()
+        .resolve::<crate::server::provider::GrpcServiceProvider>()
         .unwrap();
     let config = serde_yaml::from_str("user_management: {max_page_size: 1, max_document_bytes: 1, max_assignment_members: 1}").unwrap();
     claviron::runtime::congif::ConfigObserver::config_changed(
@@ -730,7 +730,7 @@ async fn management_limits_bound_work_before_delegation_and_follow_reload() {
             .code(),
         Code::InvalidArgument
     );
-    let config = super::super::config::GrpcConfig::default();
+    let config = crate::server::config::GrpcConfig::default();
     claviron::runtime::congif::ConfigObserver::config_changed(
         provider.as_ref(),
         &config,
@@ -753,7 +753,7 @@ fn management_limits_require_explicit_positive_bounds() {
         "user_management: {}",
     ] {
         assert!(
-            serde_yaml::from_str::<super::super::config::GrpcConfig>(text)
+            serde_yaml::from_str::<crate::server::config::GrpcConfig>(text)
                 .is_err()
         );
     }
@@ -785,7 +785,7 @@ async fn management_assignment_limit_rejects_before_provider() {
 #[cfg(all(feature = "users", feature = "authorization"))]
 #[tokio::test]
 async fn management_single_tonic_service_routes_both_capabilities() {
-    use http_body_util::{BodyExt, Full};
+    use http_body_util::BodyExt;
     use prost::Message;
     use tower::ServiceExt;
     let service = setup().await;
@@ -804,11 +804,11 @@ async fn management_single_tonic_service_routes_both_capabilities() {
             .uri("/claviron.users.UserManagement/GetSchema")
             .version(http::Version::HTTP_2)
             .header("content-type", "application/grpc")
-            .body(tonic::body::Body::new(Full::new(hyper::body::Bytes::from(
-                framed,
-            ))))
+            .body(tonic::body::Body::new(claviron::http::bytes_body(
+                framed.into(),
+            )))
             .unwrap();
-        request.extensions_mut().insert(super::super::access::Admission {
+        request.extensions_mut().insert(crate::server::access::Admission {
             operation: "/claviron.users.UserManagement/GetSchema".into(),
             actor: Some(Arc::new(Actor("operator"))),
         });
@@ -861,10 +861,8 @@ async fn management_gateway_supplies_the_policy_bound_actor_once() {
     let routes =
         tonic::service::Routes::new(create_service(service.state.clone()))
             .prepare();
-    let handler = super::super::other::ManagementGrpcHandler::with_routes(
+    let handler = crate::server::other::ManagementGrpcHandler::with_routes(
         routes,
-        Arc::new(tokio::sync::Semaphore::new(1)),
-        &super::super::config::GrpcConfig::default(),
         "management.example.test".into(),
         service.state,
     );

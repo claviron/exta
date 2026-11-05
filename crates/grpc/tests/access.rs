@@ -62,11 +62,7 @@ fn session(
     state: AppState,
     peer: Option<Arc<PeerIdentity>>,
 ) -> Session {
-    Session::new(
-        state,
-        peer,
-        super::super::config::GrpcConfig::default().request_timeout,
-    )
+    Session::new(state, peer)
 }
 #[tokio::test]
 async fn access_no_policy_preserves_peer_only_admission_without_a_user_model() {
