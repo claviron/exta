@@ -99,11 +99,11 @@ impl Component<AppState> for GrpcServiceProvider {
         "GrpcServiceProvider"
     }
 
-    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
+    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
         Some(self)
     }
 
-    fn as_reloadable(&self) -> Option<&dyn Reloadable<AppState>> {
+    fn as_configurable(&self) -> Option<&dyn congif::ConfigRegistration> {
         Some(self)
     }
 }
@@ -118,6 +118,20 @@ impl Configurable for GrpcServiceProvider {
 
     fn absent_source(&self) -> Option<GrpcConfig> {
         Some(GrpcConfig::default())
+    }
+
+    fn as_config_observer(
+        &self
+    ) -> Option<&dyn ConfigObserver<Config = Self::Config>> {
+        Some(self)
+    }
+
+    async fn configure(
+        &self,
+        config: &GrpcConfig,
+    ) -> congif::Result<()> {
+        self.apply(config);
+        Ok(())
     }
 
     #[cfg(feature = "registration")]
@@ -139,20 +153,6 @@ impl Configurable for GrpcServiceProvider {
             ));
         }
         Ok(())
-    }
-
-    async fn configure(
-        &self,
-        config: &GrpcConfig,
-    ) -> congif::Result<()> {
-        self.apply(config);
-        Ok(())
-    }
-
-    fn as_config_observer(
-        &self
-    ) -> Option<&dyn ConfigObserver<Config = Self::Config>> {
-        Some(self)
     }
 }
 
