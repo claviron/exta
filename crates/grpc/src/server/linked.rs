@@ -10,9 +10,9 @@ use claviron::app::fleet::{
 };
 use claviron::app::{ApplicationName, ApplicationRuntime};
 use claviron::edge::VhostResolver;
-use claviron::orbit::transport::{
-    ControlTarget, Error as LinkError, LinkedApplication as LinkApplication,
-    TransportService,
+use claviron::orbit::link::application::{
+    ApplicationService, ControlTarget, Error as LinkError,
+    LinkedApplication as LinkApplication,
 };
 use claviron::runtime::{AppState, FleetName};
 use prost_types::Timestamp;
@@ -37,14 +37,14 @@ pub struct LinkedApplicationManagerService {
 }
 
 impl LinkedApplicationManagerService {
-    fn transport(&self) -> Result<Arc<TransportService>, Status> {
-        let transport = self
+    fn applications(&self) -> Result<Arc<ApplicationService>, Status> {
+        let applications = self
             .state
             .registry_ref()
-            .resolve::<TransportService>()
+            .resolve::<ApplicationService>()
             .ok_or_else(|| {
                 Status::failed_precondition(
-                    "Orbit Link transport is not registered",
+                    "Orbit application link is not registered",
                 )
             })?;
         if let Some(vhosts) =
@@ -52,12 +52,12 @@ impl LinkedApplicationManagerService {
         {
             for (_, record) in vhosts.snapshot().canonical_entries() {
                 for route in record.config.orbit() {
-                    transport
+                    applications
                         .track_target(route.fleet_name, &route.application);
                 }
             }
         }
-        Ok(transport)
+        Ok(applications)
     }
 
     fn command(
@@ -88,7 +88,7 @@ impl LinkedApplicationManagerService {
             runtime: id.runtime.clone(),
             name: id.name.clone(),
         });
-        self.transport()?
+        self.applications()?
             .forward_command(fleet, &link_name, name, request.payload, target)
             .map_err(link_status)?;
         Ok(Response::new(LinkedApplicationCommandResponse {
@@ -110,7 +110,7 @@ impl LinkedApplicationManager for LinkedApplicationManagerService {
         _request: Request<ListLinkedApplicationsRequest>,
     ) -> Result<Response<ListLinkedApplicationsResponse>, Status> {
         let applications =
-            self.transport()?.linked_applications().map_err(link_status)?;
+            self.applications()?.linked_applications().map_err(link_status)?;
         Ok(Response::new(ListLinkedApplicationsResponse {
             captured_at: Some(timestamp(SystemTime::now())?),
             applications: applications
@@ -126,7 +126,7 @@ impl LinkedApplicationManager for LinkedApplicationManagerService {
     ) -> Result<Response<LinkedApplicationStatusResponse>, Status> {
         let (fleet, name) = domain_id(request.into_inner().id)?;
         let application = self
-            .transport()?
+            .applications()?
             .linked_applications()
             .map_err(link_status)?
             .into_iter()
@@ -194,8 +194,10 @@ fn domain_id(
     }
     let fleet = FleetName::try_new(&value.fleet_name)
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
-    claviron::orbit::transport::segment::check_application_name(&value.name)
-        .map_err(link_status)?;
+    claviron::orbit::link::application::segment::check_application_name(
+        &value.name,
+    )
+    .map_err(link_status)?;
     Ok((fleet, value.name))
 }
 
