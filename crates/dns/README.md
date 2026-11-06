@@ -39,7 +39,7 @@ match `db.yaml`'s `hosting:` profile. Without an explicit profile, hosting selec
 ```toml
 [dependencies]
 claviron = { version = "0.2.0-alpha.25", default-features = false, features = ["server", "postgres"] }
-claviron-dns = { version = "0.2.0-alpha.25", default-features = false, features = ["server", "postgres"] }
+claviron-dns = { version = "0.2.0-alpha.25.1", default-features = false, features = ["server", "postgres"] }
 ```
 
 ```rust
@@ -103,7 +103,10 @@ SQLite stores emit `claviron.dns.changed.v1` after commit. The provider rebuilds
 the snapshot on reload, notifications, fleet changes and listener resynchronization.
 A lagged fleet receiver reloads the full snapshot. External SQLite writers must
 explicitly request a reload; SQLite has no NOTIFY.
-Committed data and publication to every serving process are separate outcomes.
+The change listener runs in every process, independently of socket placement.
+Workers refresh serving snapshots; the master (or standalone process) sends
+secondary NOTIFY messages for changed serials. Committed data and publication
+to every serving process are separate outcomes.
 
 Snapshot reload does not rebind sockets. Address or listener-placement changes
 require a new listener generation.

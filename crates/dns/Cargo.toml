@@ -1,6 +1,6 @@
 [package]
 name = "claviron-dns"
-version = "0.2.0-alpha.25"
+version = "0.2.0-alpha.25.1"
 publish.workspace = true
 license.workspace = true
 repository.workspace = true

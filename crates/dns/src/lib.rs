@@ -80,8 +80,8 @@ pub fn register(
         )?;
     }
 
-    // Every serving process follows the selected DB's notifications or fleet
-    // events; see `providers::listener`.
+    // Every process follows database/fleet changes: workers publish serving
+    // snapshots and the master sends secondary NOTIFY messages.
     #[cfg(any(feature = "postgres", feature = "sqlite"))]
     registry.register(std::sync::Arc::new(DnsZoneListener))?;
     #[cfg(not(any(feature = "postgres", feature = "sqlite")))]

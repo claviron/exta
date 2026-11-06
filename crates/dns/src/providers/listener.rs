@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use claviron::db::{ChannelListener, Notice};
+use claviron::orbit::placement::{Scope, Scoped};
 use claviron::runtime::registry::{Component, Error, Runnable, priority};
 use claviron::runtime::{AppState, RunContext};
 use tracing::info;
@@ -26,6 +27,10 @@ impl Component<AppState> for DnsZoneListener {
     fn name(&self) -> &'static str {
         "DnsZoneListener"
     }
+    fn as_scoped(&self) -> Option<&dyn Scoped> {
+        Some(self)
+    }
+
     fn run_priority(&self) -> Option<u8> {
         Some(priority::LATE)
     }
@@ -33,6 +38,13 @@ impl Component<AppState> for DnsZoneListener {
         self: Arc<Self>
     ) -> Option<Arc<dyn Runnable<AppState, Self::Deps>>> {
         Some(self)
+    }
+}
+
+impl Scoped for DnsZoneListener {
+    fn scope(&self) -> Scope {
+        // Workers refresh their serving snapshot; the master sends NOTIFY.
+        Scope::Any
     }
 }
 
@@ -121,3 +133,7 @@ impl Runnable<AppState, <Self as Component<AppState>>::Deps>
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/zone_listener.rs"]
+mod tests;
