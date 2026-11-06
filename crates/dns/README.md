@@ -38,8 +38,8 @@ match `db.yaml`'s `hosting:` profile. Without an explicit profile, hosting selec
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.24", default-features = false, features = ["server", "postgres"] }
-claviron-dns = { version = "0.2.0-alpha.24", default-features = false, features = ["server", "postgres"] }
+claviron = { version = "0.2.0-alpha.25", default-features = false, features = ["server", "postgres"] }
+claviron-dns = { version = "0.2.0-alpha.25", default-features = false, features = ["server", "postgres"] }
 ```
 
 ```rust
